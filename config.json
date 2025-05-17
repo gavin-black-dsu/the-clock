@@ -11,5 +11,7 @@
   ,"temp_font_size": 64
   ,"temp_padding_top": 40
   ,"temp_endpoint": "http://snek:8000/habitat/api/most_recent"
+  ,"temp_network_period": 120
+  ,"weather_network_period": 900
 }
 
