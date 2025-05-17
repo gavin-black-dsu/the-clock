@@ -29,6 +29,10 @@ PADDING, DRIFT_PIXELS = 40, 6
 DRIFT_PERIOD          = timedelta(minutes=5)
 FPS                   = 30
 DEFAULT_THEME         = "default"
+TOUCH_DURATION        = timedelta(milliseconds=300)
+TOUCH_RADIUS          = 40
+TOUCH_COLOR           = (255, 255, 255)
+# Circle shows while pressed and for TOUCH_DURATION after release
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── LOAD CONFIG ─────────────────────────────────────────────────────────────
@@ -55,6 +59,7 @@ tz      = tzlib(TZ_NAME)
 screen  = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
 pygame.display.set_caption(f"Image Clock – theme: {THEME_NAME}")
 clock   = pygame.time.Clock()
+pygame.mouse.set_visible(False)
 
 # ─── CORNER ICONS (SUN & MOON) ───────────────────────────────────────────────
 def scale_icon(raw):
@@ -144,6 +149,8 @@ def base_origin():
     return cx,cy
 
 origin, next_shift = base_origin(), datetime.now(tz)+DRIFT_PERIOD
+# active touches: {button: (pos, release_time or None)}
+touches = {}
 
 def glyph_seq(dt):
     s=dt.strftime("%I:%M%p").lower()
@@ -176,6 +183,15 @@ while running:
     for e in pygame.event.get():
         if e.type==pygame.QUIT or (e.type==pygame.KEYDOWN and e.key in (pygame.K_ESCAPE,pygame.K_q)):
             running=False
+        elif e.type==pygame.MOUSEBUTTONDOWN:
+            touches[e.button] = (e.pos, None)
+        elif e.type==pygame.MOUSEBUTTONUP:
+            pos = touches.get(e.button, (e.pos, None))[0]
+            touches[e.button] = (pos, now + TOUCH_DURATION)
+
+    for b,(pos,until) in list(touches.items()):
+        if until is not None and until <= now:
+            del touches[b]
 
     # draw
     screen.fill((0,0,0))
@@ -184,6 +200,8 @@ while running:
     for k in glyph_seq(now):
         screen.blit(glyphs[k],(x,y))
         x += W_HALF if k in NARROW else W_FULL
+    for pos,_ in touches.values():
+        pygame.draw.circle(screen, TOUCH_COLOR, pos, TOUCH_RADIUS, 3)
     pygame.display.flip()
     clock.tick(FPS)
 
