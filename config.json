@@ -10,5 +10,6 @@
   ,"temp_color_night": [255,255,255]
   ,"temp_font_size": 64
   ,"temp_padding_top": 40
+  ,"temp_endpoint": "http://snek:8000/habitat/api/most_recent"
 }
 
