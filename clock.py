@@ -40,6 +40,8 @@ TOUCH_COLOR             = (255, 255, 255)
 DEFAULT_TEMP_FONT_SIZE  = 64
 DEFAULT_TEMP_PADDING_TOP= 40
 DEFAULT_TEMP_ENDPOINT   = None
+DEFAULT_TEMP_NETWORK_PERIOD = timedelta(minutes=2)
+DEFAULT_WEATHER_NETWORK_PERIOD = timedelta(minutes=15)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── LOAD CONFIG ─────────────────────────────────────────────────────────────
@@ -61,16 +63,20 @@ def load_config(path):
     size      = int(data.get("temp_font_size", DEFAULT_TEMP_FONT_SIZE))
     pad_top   = int(data.get("temp_padding_top", DEFAULT_TEMP_PADDING_TOP))
     endpoint  = data.get("temp_endpoint", DEFAULT_TEMP_ENDPOINT)
+    temp_per  = float(data.get("temp_network_period", DEFAULT_TEMP_NETWORK_PERIOD.total_seconds()))
+    weather_per = float(data.get("weather_network_period", DEFAULT_WEATHER_NETWORK_PERIOD.total_seconds()))
     return (
         theme, b_day, b_night, b_sun, b_moon,
         b_temp_day, b_temp_night, col_day, col_night,
         size, pad_top, endpoint,
+        timedelta(seconds=temp_per), timedelta(seconds=weather_per),
     )
 
 (
     THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON,
     B_TEMP_DAY, B_TEMP_NIGHT, TEMP_COL_DAY, TEMP_COL_NIGHT,
     TEMP_FONT_SIZE, TEMP_PADDING_TOP, TEMP_ENDPOINT,
+    TEMP_NETWORK_PERIOD, WEATHER_NETWORK_PERIOD,
 ) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
@@ -124,16 +130,26 @@ MAX_ICON_H = max(i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.value
 
 
 # ─── TEMPERATURE ─────────────────────────────────────────────────────────────
+LAST_TEMP_FETCH = datetime.min
+LAST_TEMP_VALUE = 72.0
+
 def get_temperature():
-    """Fetch external temperature reading (°F) from configured endpoint."""
-    if not TEMP_ENDPOINT:
-        return 72.0
-    try:
-        with urlopen(TEMP_ENDPOINT, timeout=5) as resp:
-            data = json.load(resp)
-        return float(data.get("Temperature", 72.0))
-    except Exception:
-        return 72.0
+    """Return cached temperature, refreshing from endpoint periodically."""
+    global LAST_TEMP_FETCH, LAST_TEMP_VALUE
+    now = datetime.now(tz)
+    if now - LAST_TEMP_FETCH >= TEMP_NETWORK_PERIOD:
+        if not TEMP_ENDPOINT:
+            LAST_TEMP_VALUE = 72.0
+            LAST_TEMP_FETCH = now
+        else:
+            try:
+                with urlopen(TEMP_ENDPOINT, timeout=5) as resp:
+                    data = json.load(resp)
+                LAST_TEMP_VALUE = float(data.get("Temperature", 72.0))
+                LAST_TEMP_FETCH = now
+            except Exception:
+                LAST_TEMP_FETCH = now
+    return LAST_TEMP_VALUE
 
 font_path = pygame.font.match_font("comicsansms")
 TEMP_FONT = pygame.font.Font(font_path or None, TEMP_FONT_SIZE)
