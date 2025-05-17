@@ -1,6 +1,8 @@
 {
   "theme": "succulent",
-  "brightness_day":   1.0, 
-  "brightness_night": 0.7 
+  "brightness_day":   1.0,
+  "brightness_night": 0.7,
+  "brightness_sun":   1.0,
+  "brightness_moon":  0.7
 }
 

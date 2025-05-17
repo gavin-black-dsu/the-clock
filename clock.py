@@ -5,7 +5,9 @@ Themed fullscreen image clock 1920×1080
 • Daytime corner icon:   sun/<weekday>.png
 • Night-time corner icon: moon/<phase>.png  (phase from astral.moon.phase)
 • HH:MM am/pm  (colon + am/pm = half-width)
-• Per-theme brightness  • anti burn-in drift
+• Per-theme brightness
+• Separate sun/moon brightness
+• Anti burn-in drift
 """
 
 import json, os, pathlib, random, sys
@@ -44,9 +46,11 @@ def load_config(path):
     clamp = lambda v: max(0.0, min(1.0, float(v)))
     b_day   = clamp(data.get("brightness_day",   1.0))
     b_night = clamp(data.get("brightness_night", 1.0))
-    return theme, b_day, b_night
+    b_sun   = clamp(data.get("brightness_sun",   1.0))
+    b_moon  = clamp(data.get("brightness_moon",  1.0))
+    return theme, b_day, b_night, b_sun, b_moon
 
-THEME_NAME, B_DAY, B_NIGHT = load_config(CONFIG_PATH)
+THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
     sys.exit(f"Theme '{THEME_NAME}' not found at {THEME_DIR}")
@@ -61,6 +65,14 @@ clock   = pygame.time.Clock()
 pygame.mouse.set_visible(False)
 
 # ─── CORNER ICONS (SUN & MOON) ───────────────────────────────────────────────
+def apply_brightness(surf,f):
+    if f>=.999:
+        return surf
+    mult=int(f*255)
+    s=surf.copy()
+    s.fill((mult,mult,mult,255),None,pygame.BLEND_RGBA_MULT)
+    return s
+
 def scale_icon(raw):
     max_w, max_h = SCREEN_W/4, SCREEN_H/3
     f = min(max_w/raw.get_width(), max_h/raw.get_height(), 1.0)
@@ -68,7 +80,10 @@ def scale_icon(raw):
                                               int(raw.get_height()*f)))
 
 SUN_ICONS = {
-    d: scale_icon(pygame.image.load(THEME_DIR/"sun"/f"{d}.png").convert_alpha())
+    d: apply_brightness(
+        scale_icon(pygame.image.load(THEME_DIR/"sun"/f"{d}.png").convert_alpha()),
+        B_SUN
+    )
     for d in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
 }
 
@@ -77,7 +92,10 @@ MOON_NAMES = (
     "full","waning_gibbous","third_quarter","waning_crescent"
 )
 MOON_ICONS = {
-    n: scale_icon(pygame.image.load(THEME_DIR/"moon"/f"{n}.png").convert_alpha())
+    n: apply_brightness(
+        scale_icon(pygame.image.load(THEME_DIR/"moon"/f"{n}.png").convert_alpha()),
+        B_MOON
+    )
     for n in MOON_NAMES
 }
 
@@ -112,13 +130,6 @@ DIGIT_RAW = {
     "night": load_digits(THEME_DIR/"night")
 }
 
-def apply_brightness(surf,f):
-    if f>=.999: return surf
-    mult=int(f*255)
-    s=surf.copy()
-    s.fill((mult,mult,mult,255),None,pygame.BLEND_RGBA_MULT)
-    return s
-
 sample = next(iter(DIGIT_RAW["day"].values()))
 ow, oh = sample.get_width(), sample.get_height()
 TOTAL_UNITS=5.0
@@ -145,6 +156,7 @@ def base_origin():
     return cx,cy
 
 origin, next_shift = base_origin(), datetime.now(tz)+DRIFT_PERIOD
+icon_offset = (0,0)
 touches = []
 
 def glyph_seq(dt):
@@ -166,13 +178,16 @@ while running:
         icon = SUN_ICONS[now.strftime("%A").lower()]
     else:
         icon = MOON_ICONS[moon_phase_name(now.date())]
-    icon_x = SCREEN_W - icon.get_width() - PADDING
+    icon_x = SCREEN_W - icon.get_width() - PADDING + icon_offset[0]
+    icon_y = PADDING + icon_offset[1]
 
     # drift
     if now >= next_shift:
         bx,by = base_origin()
         origin=(bx+random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
                 by+random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
+        icon_offset=(random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
+                     random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
         next_shift = now + DRIFT_PERIOD
 
     for e in pygame.event.get():
@@ -185,7 +200,7 @@ while running:
 
     # draw
     screen.fill((0,0,0))
-    screen.blit(icon,(icon_x,PADDING))
+    screen.blit(icon,(icon_x,icon_y))
     x,y=origin
     for k in glyph_seq(now):
         screen.blit(glyphs[k],(x,y))
