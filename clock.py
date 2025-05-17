@@ -86,10 +86,7 @@ TOP_RESERVED = MAX_ICON_H + 2*PADDING
 
 
 # ─── MOON-PHASE → FILENAME (8-way) ───────────────────────────────────────────
-MOON_NAMES = (
-    "new", "waxing_crescent", "first_quarter", "waxing_gibbous",
-    "full", "waning_gibbous", "third_quarter", "waning_crescent"
-)
+# `MOON_NAMES` defined above with icon loading
 
 def moon_phase_name(date):
     """
