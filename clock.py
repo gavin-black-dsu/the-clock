@@ -7,6 +7,8 @@ Themed fullscreen image clock 1920×1080
 • HH:MM am/pm  (colon + am/pm = half-width)
 • Per-theme brightness
 • Separate sun/moon brightness
+• Temperature readout centered at top with configurable font size,
+  color, brightness, and padding
 • Anti burn-in drift
 """
 
@@ -27,13 +29,15 @@ BASE_DIR           = pathlib.Path(__file__).parent
 IMAGES_ROOT        = BASE_DIR / "images"
 CONFIG_PATH        = BASE_DIR / "config.json"
 
-PADDING, DRIFT_PIXELS = 40, 6
-DRIFT_PERIOD          = timedelta(minutes=5)
-FPS                   = 30
-DEFAULT_THEME         = "default"
-TOUCH_DURATION        = timedelta(milliseconds=300)
-TOUCH_RADIUS          = 40
-TOUCH_COLOR           = (255, 255, 255)
+PADDING, DRIFT_PIXELS   = 40, 6
+DRIFT_PERIOD            = timedelta(minutes=5)
+FPS                     = 30
+DEFAULT_THEME           = "default"
+TOUCH_DURATION          = timedelta(milliseconds=300)
+TOUCH_RADIUS            = 40
+TOUCH_COLOR             = (255, 255, 255)
+DEFAULT_TEMP_FONT_SIZE  = 64
+DEFAULT_TEMP_PADDING_TOP= 40
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── LOAD CONFIG ─────────────────────────────────────────────────────────────
@@ -48,9 +52,23 @@ def load_config(path):
     b_night = clamp(data.get("brightness_night", 1.0))
     b_sun   = clamp(data.get("brightness_sun",   1.0))
     b_moon  = clamp(data.get("brightness_moon",  1.0))
-    return theme, b_day, b_night, b_sun, b_moon
+    b_temp_day   = clamp(data.get("temp_brightness_day",   1.0))
+    b_temp_night = clamp(data.get("temp_brightness_night", 1.0))
+    col_day   = tuple(data.get("temp_color_day",  [255, 255, 255]))
+    col_night = tuple(data.get("temp_color_night", [255, 255, 255]))
+    size      = int(data.get("temp_font_size", DEFAULT_TEMP_FONT_SIZE))
+    pad_top   = int(data.get("temp_padding_top", DEFAULT_TEMP_PADDING_TOP))
+    return (
+        theme, b_day, b_night, b_sun, b_moon,
+        b_temp_day, b_temp_night, col_day, col_night,
+        size, pad_top,
+    )
 
-THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON = load_config(CONFIG_PATH)
+(
+    THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON,
+    B_TEMP_DAY, B_TEMP_NIGHT, TEMP_COL_DAY, TEMP_COL_NIGHT,
+    TEMP_FONT_SIZE, TEMP_PADDING_TOP,
+) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
     sys.exit(f"Theme '{THEME_NAME}' not found at {THEME_DIR}")
@@ -99,8 +117,20 @@ MOON_ICONS = {
     for n in MOON_NAMES
 }
 
-MAX_ICON_H   = max(i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values()))
-TOP_RESERVED = MAX_ICON_H + 2*PADDING
+MAX_ICON_H = max(i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values()))
+
+
+# ─── TEMPERATURE ─────────────────────────────────────────────────────────────
+def get_temperature():
+    """Placeholder for external temperature reading (°F)."""
+    return 72.0
+
+font_path = pygame.font.match_font("comicsansms")
+TEMP_FONT = pygame.font.Font(font_path or None, TEMP_FONT_SIZE)
+TOP_RESERVED = max(
+    MAX_ICON_H + 2 * PADDING,
+    TEMP_PADDING_TOP + TEMP_FONT.get_height() + PADDING,
+)
 
 
 # ─── MOON-PHASE → FILENAME (8-way) ───────────────────────────────────────────
@@ -157,6 +187,7 @@ def base_origin():
 
 origin, next_shift = base_origin(), datetime.now(tz)+DRIFT_PERIOD
 icon_offset = (0,0)
+temp_offset = (0,0)
 touches = []
 
 def glyph_seq(dt):
@@ -173,6 +204,15 @@ while running:
     theme_key = "day" if is_day else "night"
     glyphs    = DIGITS[theme_key]
 
+    temp_val  = get_temperature()
+    temp_txt  = f"{temp_val:.0f}\N{DEGREE SIGN}F"
+    raw_col   = TEMP_COL_DAY if is_day else TEMP_COL_NIGHT
+    bright    = B_TEMP_DAY if is_day else B_TEMP_NIGHT
+    col       = tuple(min(255, int(c*bright)) for c in raw_col)
+    temp_surf = TEMP_FONT.render(temp_txt, True, col)
+    temp_x    = (SCREEN_W - temp_surf.get_width()) // 2 + temp_offset[0]
+    temp_y    = TEMP_PADDING_TOP + temp_offset[1]
+
     # corner icon
     if is_day:
         icon = SUN_ICONS[now.strftime("%A").lower()]
@@ -188,6 +228,8 @@ while running:
                 by+random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
         icon_offset=(random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
                      random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
+        temp_offset=(random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
+                     random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
         next_shift = now + DRIFT_PERIOD
 
     for e in pygame.event.get():
@@ -201,6 +243,7 @@ while running:
     # draw
     screen.fill((0,0,0))
     screen.blit(icon,(icon_x,icon_y))
+    screen.blit(temp_surf,(temp_x,temp_y))
     x,y=origin
     for k in glyph_seq(now):
         screen.blit(glyphs[k],(x,y))
