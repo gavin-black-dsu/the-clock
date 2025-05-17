@@ -4,5 +4,10 @@
   "brightness_night": 0.7,
   "brightness_sun":   1.0,
   "brightness_moon":  0.7
+  ,"temp_brightness_day": 1.0
+  ,"temp_brightness_night": 1.0
+  ,"temp_color_day": [255,255,255]
+  ,"temp_color_night": [255,255,255]
+  ,"temp_url": "http://snek:8000/habitat/api/most_recent"
 }
 
