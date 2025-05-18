@@ -9,6 +9,8 @@ Themed fullscreen image clock 1920×1080
 • Separate sun/moon brightness
 • Temperature readout centered at top with configurable font size,
   color, brightness, and padding
+• Weather icon fetched from an endpoint and shown opposite the
+  day/night icon
 • Anti burn-in drift
 """
 
@@ -41,6 +43,7 @@ DEFAULT_TEMP_FONT_SIZE  = 64
 DEFAULT_TEMP_PADDING_TOP= 40
 DEFAULT_TEMP_ENDPOINT   = None
 DEFAULT_TEMP_NETWORK_PERIOD = timedelta(minutes=2)
+DEFAULT_WEATHER_ENDPOINT = "http://snek:8000/weather/api/most_recent"
 DEFAULT_WEATHER_NETWORK_PERIOD = timedelta(minutes=15)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -56,6 +59,7 @@ def load_config(path):
     b_night = clamp(data.get("brightness_night", 1.0))
     b_sun   = clamp(data.get("brightness_sun",   1.0))
     b_moon  = clamp(data.get("brightness_moon",  1.0))
+    b_weather = clamp(data.get("brightness_weather", 1.0))
     b_temp_day   = clamp(data.get("temp_brightness_day",   1.0))
     b_temp_night = clamp(data.get("temp_brightness_night", 1.0))
     col_day   = tuple(data.get("temp_color_day",  [255, 255, 255]))
@@ -63,19 +67,20 @@ def load_config(path):
     size      = int(data.get("temp_font_size", DEFAULT_TEMP_FONT_SIZE))
     pad_top   = int(data.get("temp_padding_top", DEFAULT_TEMP_PADDING_TOP))
     endpoint  = data.get("temp_endpoint", DEFAULT_TEMP_ENDPOINT)
+    weather_endpoint = data.get("weather_endpoint", DEFAULT_WEATHER_ENDPOINT)
     temp_per  = float(data.get("temp_network_period", DEFAULT_TEMP_NETWORK_PERIOD.total_seconds()))
     weather_per = float(data.get("weather_network_period", DEFAULT_WEATHER_NETWORK_PERIOD.total_seconds()))
     return (
-        theme, b_day, b_night, b_sun, b_moon,
+        theme, b_day, b_night, b_sun, b_moon, b_weather,
         b_temp_day, b_temp_night, col_day, col_night,
-        size, pad_top, endpoint,
+        size, pad_top, endpoint, weather_endpoint,
         timedelta(seconds=temp_per), timedelta(seconds=weather_per),
     )
 
 (
-    THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON,
+    THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON, B_WEATHER,
     B_TEMP_DAY, B_TEMP_NIGHT, TEMP_COL_DAY, TEMP_COL_NIGHT,
-    TEMP_FONT_SIZE, TEMP_PADDING_TOP, TEMP_ENDPOINT,
+    TEMP_FONT_SIZE, TEMP_PADDING_TOP, TEMP_ENDPOINT, WEATHER_ENDPOINT,
     TEMP_NETWORK_PERIOD, WEATHER_NETWORK_PERIOD,
 ) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
@@ -126,12 +131,25 @@ MOON_ICONS = {
     for n in MOON_NAMES
 }
 
-MAX_ICON_H = max(i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values()))
+WEATHER_ICONS = {
+    p.stem: apply_brightness(
+        scale_icon(pygame.image.load(p).convert_alpha()),
+        B_WEATHER,
+    )
+    for p in (THEME_DIR / "weather").glob("*.png")
+}
+
+MAX_ICON_H = max(
+    i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values(), *WEATHER_ICONS.values())
+)
 
 
 # ─── TEMPERATURE ─────────────────────────────────────────────────────────────
 LAST_TEMP_FETCH = datetime.now(tz) - TEMP_NETWORK_PERIOD
 LAST_TEMP_VALUE = 72.0
+
+LAST_WEATHER_FETCH = datetime.now(tz) - WEATHER_NETWORK_PERIOD
+LAST_WEATHER_ICON = "clear_day"
 
 def get_temperature():
     """Return cached temperature, refreshing from endpoint periodically."""
@@ -150,6 +168,22 @@ def get_temperature():
             except Exception:
                 LAST_TEMP_FETCH = now
     return LAST_TEMP_VALUE
+
+def get_weather_icon():
+    """Return cached weather icon surface, refreshing periodically."""
+    global LAST_WEATHER_FETCH, LAST_WEATHER_ICON
+    now = datetime.now(tz)
+    if now - LAST_WEATHER_FETCH >= WEATHER_NETWORK_PERIOD:
+        try:
+            with urlopen(WEATHER_ENDPOINT, timeout=5) as resp:
+                data = json.load(resp)
+            icon_name = str(data.get("icon", LAST_WEATHER_ICON))
+            if icon_name in WEATHER_ICONS:
+                LAST_WEATHER_ICON = icon_name
+            LAST_WEATHER_FETCH = now
+        except Exception:
+            LAST_WEATHER_FETCH = now
+    return WEATHER_ICONS.get(LAST_WEATHER_ICON)
 
 font_path = pygame.font.match_font("comicsansms")
 TEMP_FONT = pygame.font.Font(font_path or None, TEMP_FONT_SIZE)
@@ -214,6 +248,7 @@ def base_origin():
 origin, next_shift = base_origin(), datetime.now(tz)+DRIFT_PERIOD
 icon_offset = (0,0)
 temp_offset = (0,0)
+weather_offset = (0,0)
 touches = []
 
 def glyph_seq(dt):
@@ -239,13 +274,18 @@ while running:
     temp_x    = (SCREEN_W - temp_surf.get_width()) // 2 + temp_offset[0]
     temp_y    = TEMP_PADDING_TOP + temp_offset[1]
 
-    # corner icon
+    # day/night corner icon
     if is_day:
         icon = SUN_ICONS[now.strftime("%A").lower()]
     else:
         icon = MOON_ICONS[moon_phase_name(now.date())]
-    icon_x = SCREEN_W - icon.get_width() - PADDING + icon_offset[0]
+    icon_x = PADDING + icon_offset[0]
     icon_y = PADDING + icon_offset[1]
+
+    # weather icon
+    weather = get_weather_icon()
+    weather_x = SCREEN_W - weather.get_width() - PADDING + weather_offset[0]
+    weather_y = PADDING + weather_offset[1]
 
     # drift
     if now >= next_shift:
@@ -256,6 +296,8 @@ while running:
                      random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
         temp_offset=(random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
                      random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
+        weather_offset=(random.randint(-DRIFT_PIXELS,DRIFT_PIXELS),
+                        random.randint(-DRIFT_PIXELS,DRIFT_PIXELS))
         next_shift = now + DRIFT_PERIOD
 
     for e in pygame.event.get():
@@ -269,6 +311,7 @@ while running:
     # draw
     screen.fill((0,0,0))
     screen.blit(icon,(icon_x,icon_y))
+    screen.blit(weather,(weather_x,weather_y))
     screen.blit(temp_surf,(temp_x,temp_y))
     x,y=origin
     for k in glyph_seq(now):
