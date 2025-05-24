@@ -59,7 +59,14 @@ def load_config(path):
     b_night = clamp(data.get("brightness_night", 1.0))
     b_sun   = clamp(data.get("brightness_sun",   1.0))
     b_moon  = clamp(data.get("brightness_moon",  1.0))
-    b_weather = clamp(data.get("brightness_weather", 1.0))
+    b_weather_day = clamp(
+        data.get("brightness_weather_day",
+                 data.get("brightness_weather", 1.0))
+    )
+    b_weather_night = clamp(
+        data.get("brightness_weather_night",
+                 data.get("brightness_weather", 1.0))
+    )
     b_temp_day   = clamp(data.get("temp_brightness_day",   1.0))
     b_temp_night = clamp(data.get("temp_brightness_night", 1.0))
     col_day   = tuple(data.get("temp_color_day",  [255, 255, 255]))
@@ -71,17 +78,43 @@ def load_config(path):
     temp_per  = float(data.get("temp_network_period", DEFAULT_TEMP_NETWORK_PERIOD.total_seconds()))
     weather_per = float(data.get("weather_network_period", DEFAULT_WEATHER_NETWORK_PERIOD.total_seconds()))
     return (
-        theme, b_day, b_night, b_sun, b_moon, b_weather,
-        b_temp_day, b_temp_night, col_day, col_night,
-        size, pad_top, endpoint, weather_endpoint,
-        timedelta(seconds=temp_per), timedelta(seconds=weather_per),
+        theme,
+        b_day,
+        b_night,
+        b_sun,
+        b_moon,
+        b_weather_day,
+        b_weather_night,
+        b_temp_day,
+        b_temp_night,
+        col_day,
+        col_night,
+        size,
+        pad_top,
+        endpoint,
+        weather_endpoint,
+        timedelta(seconds=temp_per),
+        timedelta(seconds=weather_per),
     )
 
 (
-    THEME_NAME, B_DAY, B_NIGHT, B_SUN, B_MOON, B_WEATHER,
-    B_TEMP_DAY, B_TEMP_NIGHT, TEMP_COL_DAY, TEMP_COL_NIGHT,
-    TEMP_FONT_SIZE, TEMP_PADDING_TOP, TEMP_ENDPOINT, WEATHER_ENDPOINT,
-    TEMP_NETWORK_PERIOD, WEATHER_NETWORK_PERIOD,
+    THEME_NAME,
+    B_DAY,
+    B_NIGHT,
+    B_SUN,
+    B_MOON,
+    B_WEATHER_DAY,
+    B_WEATHER_NIGHT,
+    B_TEMP_DAY,
+    B_TEMP_NIGHT,
+    TEMP_COL_DAY,
+    TEMP_COL_NIGHT,
+    TEMP_FONT_SIZE,
+    TEMP_PADDING_TOP,
+    TEMP_ENDPOINT,
+    WEATHER_ENDPOINT,
+    TEMP_NETWORK_PERIOD,
+    WEATHER_NETWORK_PERIOD,
 ) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
@@ -125,22 +158,30 @@ MOON_NAMES = (
 )
 MOON_ICONS = {
     n: apply_brightness(
-        scale_icon(pygame.image.load(THEME_DIR/"moon"/f"{n}.png").convert_alpha()),
-        B_MOON
+        scale_icon(pygame.image.load(THEME_DIR / "moon" / f"{n}.png").convert_alpha()),
+        B_MOON,
     )
     for n in MOON_NAMES
 }
 
-WEATHER_ICONS = {
-    p.stem: apply_brightness(
-        scale_icon(pygame.image.load(p).convert_alpha()),
-        B_WEATHER,
-    )
+WEATHER_RAW = {
+    p.stem: scale_icon(pygame.image.load(p).convert_alpha())
     for p in (THEME_DIR / "weather").glob("*.png")
 }
 
+WEATHER_ICONS = {
+    "day": {
+        name: apply_brightness(img, B_WEATHER_DAY)
+        for name, img in WEATHER_RAW.items()
+    },
+    "night": {
+        name: apply_brightness(img, B_WEATHER_NIGHT)
+        for name, img in WEATHER_RAW.items()
+    },
+}
+
 MAX_ICON_H = max(
-    i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values(), *WEATHER_ICONS.values())
+    i.get_height() for i in (*SUN_ICONS.values(), *MOON_ICONS.values(), *WEATHER_RAW.values())
 )
 
 
@@ -169,7 +210,7 @@ def get_temperature():
                 LAST_TEMP_FETCH = now
     return LAST_TEMP_VALUE
 
-def get_weather_icon():
+def get_weather_icon(theme_key):
     """Return cached weather icon surface, refreshing periodically."""
     global LAST_WEATHER_FETCH, LAST_WEATHER_ICON
     now = datetime.now(tz)
@@ -178,12 +219,12 @@ def get_weather_icon():
             with urlopen(WEATHER_ENDPOINT, timeout=5) as resp:
                 data = json.load(resp)
             icon_name = str(data.get("icon", LAST_WEATHER_ICON))
-            if icon_name in WEATHER_ICONS:
+            if icon_name in WEATHER_RAW:
                 LAST_WEATHER_ICON = icon_name
             LAST_WEATHER_FETCH = now
         except Exception:
             LAST_WEATHER_FETCH = now
-    return WEATHER_ICONS.get(LAST_WEATHER_ICON)
+    return WEATHER_ICONS[theme_key].get(LAST_WEATHER_ICON)
 
 font_path = pygame.font.match_font("comicsansms")
 TEMP_FONT = pygame.font.Font(font_path or None, TEMP_FONT_SIZE)
@@ -283,7 +324,7 @@ while running:
     icon_y = PADDING + icon_offset[1]
 
     # weather icon on the left
-    weather = get_weather_icon()
+    weather = get_weather_icon(theme_key)
     weather_x = PADDING + weather_offset[0]
     weather_y = PADDING + weather_offset[1]
 
