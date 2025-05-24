@@ -12,7 +12,8 @@
   ,"temp_padding_top": 40
   ,"temp_endpoint": "http://snek:8000/habitat/api/most_recent"
   ,"temp_network_period": 120
-  ,"brightness_weather": 1.0
+  ,"brightness_weather_day": 1.0
+  ,"brightness_weather_night": 0.7
   ,"weather_endpoint": "http://snek:8000/weather/api/most_recent"
   ,"weather_network_period": 900
 }
