@@ -1,10 +1,10 @@
 # The Clock
 
-This project is a fullscreen image clock created as a gift. It runs on Python and Pygame and shows the time alongside current temperature and weather information. The artwork is fully AI generated.
+This project is a fullscreen image clock created as a gift meant to run on a small OLED display. It requires Python and Pygame and shows the time alongside current temperature and weather information, displayed as cute-styled characters. The project was done (almost) fully using OpenAI's suite of tools with minimal manual editing and image manipulation.
 
 ## Configuration
 
-Settings are loaded from `config.json`. You can tweak brightness, colors, and endpoints for temperature and weather data. Images live under `images/<theme>/` and you can add new themes by creating additional folders.
+Settings are loaded from `config.json`. You can tweak brightness, colors, and endpoints for temperature and weather data. Images live under `images/<theme>/` and new themes can be added by creating additional folders.
 
 ```json
 {
@@ -16,25 +16,23 @@ Settings are loaded from `config.json`. You can tweak brightness, colors, and en
 }
 ```
 
-### Temperature endpoint
-The clock expects an endpoint that returns JSON like:
+### Endpoints
+The clock expects an endpoint that returns temperature in a JSON-format like:
 
 ```json
 { "Temperature": 72.0 }
 ```
 
-### Weather endpoint
-The weather API should return JSON containing the icon name used for the theme:
+Similarly, a weather API should return JSON containing the icon name used for the theme:
 
 ```json
 { "condition": "clear_day" }
 ```
 
-## Vibe Coding
-This code was developed entirely using [Vibe Coding](https://vibecoding.org/), a workflow focused on improvisation and live feedback.
+## AI/ML Usage
+This code was developed using [Vibe Coding](https://en.wikipedia.org/wiki/Vibe_coding) with OpenAI's Codex. The artwork was similarly generated using Sora. Minimal manual editing was used for both the coding and images.
 
 ## Screenshot
-Add a screenshot here once available:
 
-![Screenshot](images/screenshot_placeholder.png)
+![Screenshot](images/screenshot.png)
 
