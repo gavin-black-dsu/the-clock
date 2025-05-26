@@ -16,4 +16,5 @@
   ,"brightness_weather_night": 0.7
   ,"weather_endpoint": "http://snek:8000/weather/api/most_recent"
   ,"weather_network_period": 900
+  ,"time_adjust": 0
 }
