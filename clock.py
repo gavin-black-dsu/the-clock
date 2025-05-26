@@ -45,6 +45,7 @@ DEFAULT_TEMP_ENDPOINT   = None
 DEFAULT_TEMP_NETWORK_PERIOD = timedelta(minutes=2)
 DEFAULT_WEATHER_ENDPOINT = "http://snek:8000/weather/api/most_recent"
 DEFAULT_WEATHER_NETWORK_PERIOD = timedelta(minutes=15)
+DEFAULT_TIME_ADJUST = 0  # hours to shift displayed time
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── LOAD CONFIG ─────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ def load_config(path):
     weather_endpoint = data.get("weather_endpoint", DEFAULT_WEATHER_ENDPOINT)
     temp_per  = float(data.get("temp_network_period", DEFAULT_TEMP_NETWORK_PERIOD.total_seconds()))
     weather_per = float(data.get("weather_network_period", DEFAULT_WEATHER_NETWORK_PERIOD.total_seconds()))
+    time_adj = int(data.get("time_adjust", DEFAULT_TIME_ADJUST))
     return (
         theme,
         b_day,
@@ -95,6 +97,7 @@ def load_config(path):
         weather_endpoint,
         timedelta(seconds=temp_per),
         timedelta(seconds=weather_per),
+        time_adj,
     )
 
 (
@@ -115,6 +118,7 @@ def load_config(path):
     WEATHER_ENDPOINT,
     TEMP_NETWORK_PERIOD,
     WEATHER_NETWORK_PERIOD,
+    TIME_ADJUST,
 ) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
@@ -354,8 +358,9 @@ while running:
     screen.blit(icon,(icon_x,icon_y))
     screen.blit(weather,(weather_x,weather_y))
     screen.blit(temp_surf,(temp_x,temp_y))
+    display_time = now + timedelta(hours=TIME_ADJUST)
     x,y=origin
-    for k in glyph_seq(now):
+    for k in glyph_seq(display_time):
         screen.blit(glyphs[k],(x,y))
         x += W_HALF if k in NARROW else W_FULL
     for pos,_ in touches:
