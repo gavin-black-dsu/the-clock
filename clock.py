@@ -196,6 +196,20 @@ LAST_TEMP_VALUE = 72.0
 LAST_WEATHER_FETCH = datetime.now(tz) - WEATHER_NETWORK_PERIOD
 LAST_WEATHER_ICON = "clear_day"
 
+
+def log_exception(e, logfile="error.log"):
+    """Logs an exception with a human-readable timestamp and traceback."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    error_message = f"[{timestamp}] Exception occurred: {e}\n"
+
+    # Print to console
+    print(error_message.strip())
+
+    # Append to log file
+    with open(logfile, "a") as f:
+        f.write(error_message)
+        f.write("\n")
+
 def get_temperature():
     """Return cached temperature, refreshing from endpoint periodically."""
     global LAST_TEMP_FETCH, LAST_TEMP_VALUE
@@ -210,7 +224,8 @@ def get_temperature():
                     data = json.load(resp)
                 LAST_TEMP_VALUE = float(data.get("Temperature", 72.0))
                 LAST_TEMP_FETCH = now
-            except Exception:
+            except Exception as e:
+                log_exception(e)
                 LAST_TEMP_FETCH = now
     return LAST_TEMP_VALUE
 
@@ -226,7 +241,8 @@ def get_weather_icon(theme_key):
             if icon_name in WEATHER_RAW:
                 LAST_WEATHER_ICON = icon_name
             LAST_WEATHER_FETCH = now
-        except Exception:
+        except Exception as e:
+            log_exception(e)
             LAST_WEATHER_FETCH = now
     return WEATHER_ICONS[theme_key].get(LAST_WEATHER_ICON)
 
