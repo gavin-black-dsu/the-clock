@@ -197,10 +197,10 @@ LAST_WEATHER_FETCH = datetime.now(tz) - WEATHER_NETWORK_PERIOD
 LAST_WEATHER_ICON = "clear_day"
 
 
-def log_exception(e, logfile="error.log"):
+def log_exception(e, msg="", logfile="error.log"):
     """Logs an exception with a human-readable timestamp and traceback."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    error_message = f"[{timestamp}] Exception occurred: {e}\n"
+    error_message = f"[{timestamp}] {msg} Exception occurred: {e}\n"
 
     # Print to console
     print(error_message.strip())
@@ -220,12 +220,12 @@ def get_temperature():
             LAST_TEMP_FETCH = now
         else:
             try:
-                with urlopen(TEMP_ENDPOINT, timeout=5) as resp:
+                with urlopen(TEMP_ENDPOINT, timeout=15) as resp:
                     data = json.load(resp)
                 LAST_TEMP_VALUE = float(data.get("Temperature", 72.0))
                 LAST_TEMP_FETCH = now
             except Exception as e:
-                log_exception(e)
+                log_exception(e, TEMP_ENDPOINT)
                 LAST_TEMP_FETCH = now
     return LAST_TEMP_VALUE
 
@@ -235,14 +235,14 @@ def get_weather_icon(theme_key):
     now = datetime.now(tz)
     if now - LAST_WEATHER_FETCH >= WEATHER_NETWORK_PERIOD:
         try:
-            with urlopen(WEATHER_ENDPOINT, timeout=5) as resp:
+            with urlopen(WEATHER_ENDPOINT, timeout=15) as resp:
                 data = json.load(resp)
             icon_name = str(data.get("condition", LAST_WEATHER_ICON))
             if icon_name in WEATHER_RAW:
                 LAST_WEATHER_ICON = icon_name
             LAST_WEATHER_FETCH = now
         except Exception as e:
-            log_exception(e)
+            log_exception(e, WEATHER_ENDPOINT)
             LAST_WEATHER_FETCH = now
     return WEATHER_ICONS[theme_key].get(LAST_WEATHER_ICON)
 
