@@ -46,6 +46,16 @@ DEFAULT_TEMP_NETWORK_PERIOD = timedelta(minutes=2)
 DEFAULT_WEATHER_ENDPOINT = "http://snek:8000/weather/api/most_recent"
 DEFAULT_WEATHER_NETWORK_PERIOD = timedelta(minutes=15)
 DEFAULT_TIME_ADJUST = 0  # hours to shift displayed time
+DEFAULT_LINE_OKAY_COLOR  = (0, 255, 0)
+DEFAULT_LINE_WARN_COLOR  = (255, 165, 0)
+DEFAULT_LINE_ALARM_COLOR = (255, 0, 0)
+
+DEFAULT_LINE_STATUS_ENDPOINT = None
+DEFAULT_LINE_NETWORK_PERIOD  = timedelta(minutes=1)
+
+DEFAULT_LINE_HEIGHT = 10
+DEFAULT_LINE_MARGIN = 12
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── LOAD CONFIG ─────────────────────────────────────────────────────────────
@@ -79,6 +89,16 @@ def load_config(path):
     temp_per  = float(data.get("temp_network_period", DEFAULT_TEMP_NETWORK_PERIOD.total_seconds()))
     weather_per = float(data.get("weather_network_period", DEFAULT_WEATHER_NETWORK_PERIOD.total_seconds()))
     time_adj = int(data.get("time_adjust", DEFAULT_TIME_ADJUST))
+    line_okay  = tuple(data.get("line_okay",  list(DEFAULT_LINE_OKAY_COLOR)))
+    line_warn  = tuple(data.get("line_warn",  list(DEFAULT_LINE_WARN_COLOR)))
+    line_alarm = tuple(data.get("line_alarm", list(DEFAULT_LINE_ALARM_COLOR)))
+
+    line_endpoint = data.get("line_status_endpoint", DEFAULT_LINE_STATUS_ENDPOINT)
+    line_per = float(data.get("line_network_period", DEFAULT_LINE_NETWORK_PERIOD.total_seconds()))
+
+    line_height = int(data.get("line_height", DEFAULT_LINE_HEIGHT))
+    line_margin = int(data.get("line_margin", DEFAULT_LINE_MARGIN))
+
     return (
         theme,
         b_day,
@@ -98,6 +118,13 @@ def load_config(path):
         timedelta(seconds=temp_per),
         timedelta(seconds=weather_per),
         time_adj,
+        line_okay,
+        line_warn,
+        line_alarm,
+        line_endpoint,
+        timedelta(seconds=line_per),
+        line_height,
+        line_margin,
     )
 
 (
@@ -119,6 +146,13 @@ def load_config(path):
     TEMP_NETWORK_PERIOD,
     WEATHER_NETWORK_PERIOD,
     TIME_ADJUST,
+    LINE_OKAY,
+    LINE_WARN,
+    LINE_ALARM,
+    LINE_STATUS_ENDPOINT,
+    LINE_NETWORK_PERIOD,
+    LINE_HEIGHT,
+    LINE_MARGIN,
 ) = load_config(CONFIG_PATH)
 THEME_DIR = IMAGES_ROOT / THEME_NAME
 if not THEME_DIR.exists():
@@ -196,6 +230,8 @@ LAST_TEMP_VALUE = 72.0
 LAST_WEATHER_FETCH = datetime.now(tz) - WEATHER_NETWORK_PERIOD
 LAST_WEATHER_ICON = "clear_day"
 
+LAST_LINE_FETCH  = datetime.now(tz) - LINE_NETWORK_PERIOD
+LAST_LINE_STATUS = "okay"   # default should be line_okay
 
 def log_exception(e, msg="", logfile="error.log"):
     """Logs an exception with a human-readable timestamp and traceback."""
@@ -245,6 +281,43 @@ def get_weather_icon(theme_key):
             log_exception(e, WEATHER_ENDPOINT)
             LAST_WEATHER_FETCH = now
     return WEATHER_ICONS[theme_key].get(LAST_WEATHER_ICON)
+
+def get_line_status():
+    """Return cached line status, refreshing from endpoint periodically."""
+    global LAST_LINE_FETCH, LAST_LINE_STATUS
+    now = datetime.now(tz)
+
+    if now - LAST_LINE_FETCH >= LINE_NETWORK_PERIOD:
+        if not LINE_STATUS_ENDPOINT:
+            # No endpoint configured -> stay default
+            LAST_LINE_STATUS = LAST_LINE_STATUS or "okay"
+            LAST_LINE_FETCH = now
+        else:
+            try:
+                with urlopen(LINE_STATUS_ENDPOINT, timeout=15) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace").strip().lower()
+
+                # allow either plain text "okay" or JSON {"status":"okay"}
+                status = None
+                if raw.startswith("{"):
+                    try:
+                        obj = json.loads(raw)
+                        status = str(obj.get("status") or obj.get("state") or "").strip().lower()
+                    except Exception:
+                        status = None
+                else:
+                    status = raw
+
+                if status in ("alarm", "warn", "okay"):
+                    LAST_LINE_STATUS = status
+
+                LAST_LINE_FETCH = now
+            except Exception as e:
+                log_exception(e, LINE_STATUS_ENDPOINT)
+                LAST_LINE_FETCH = now
+
+    return LAST_LINE_STATUS or "okay"
+
 
 font_path = pygame.font.match_font("comicsansms")
 TEMP_FONT = pygame.font.Font(font_path or None, TEMP_FONT_SIZE)
@@ -334,6 +407,15 @@ while running:
     temp_surf = TEMP_FONT.render(temp_txt, True, col)
     temp_x    = (SCREEN_W - temp_surf.get_width()) // 2 + temp_offset[0]
     temp_y    = TEMP_PADDING_TOP + temp_offset[1]
+    # status-driven line under temp
+    status = get_line_status()  # cached; only hits network periodically
+    if status == "alarm":
+        line_col = LINE_ALARM
+    elif status == "warn":
+        line_col = LINE_WARN
+    else:
+        line_col = LINE_OKAY
+
 
     # day/night corner icon on the right
     if is_day:
@@ -374,6 +456,13 @@ while running:
     screen.blit(icon,(icon_x,icon_y))
     screen.blit(weather,(weather_x,weather_y))
     screen.blit(temp_surf,(temp_x,temp_y))
+    line_y = temp_y + temp_surf.get_height() + LINE_MARGIN
+    pygame.draw.rect(
+        screen,
+        line_col,
+        pygame.Rect(temp_x, line_y, temp_surf.get_width(), LINE_HEIGHT)
+    )
+
     display_time = now + timedelta(hours=TIME_ADJUST)
     x,y=origin
     for k in glyph_seq(display_time):
