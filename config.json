@@ -1,7 +1,7 @@
 {
-  "theme": "halloween",
+  "theme": "succulent",
   "brightness_day":   1.0,
-  "brightness_night": 0.5,
+  "brightness_night": 0.8,
   "brightness_sun":   1.0,
   "brightness_moon":  0.7
   ,"temp_brightness_day": 1.0
@@ -14,7 +14,7 @@
   ,"temp_network_period": 120
   ,"brightness_weather_day": 1.0
   ,"brightness_weather_night": 0.5
-  ,"weather_endpoint": "http://snek:8000/weather/api/most_recent"
+  ,"weather_endpoint": "http://snek:8000/weather/api/condition"
   ,"weather_network_period": 900
   ,"time_adjust": 1
   ,"line_okay":  [0, 55, 0]
