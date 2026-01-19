@@ -273,7 +273,7 @@ def get_weather_icon(theme_key):
         try:
             with urlopen(WEATHER_ENDPOINT, timeout=15) as resp:
                 data = json.load(resp)
-            icon_name = str(data.get("condition", LAST_WEATHER_ICON))
+            icon_name = str(data.get("value", LAST_WEATHER_ICON))
             if icon_name in WEATHER_RAW:
                 LAST_WEATHER_ICON = icon_name
             LAST_WEATHER_FETCH = now
