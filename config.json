@@ -20,7 +20,7 @@
   ,"line_okay":  [0, 55, 0]
   ,"line_warn":  [85, 85, 0]
   ,"line_alarm": [255, 0, 0]
-  ,"line_status_endpoint": "http://snek:8000/static/line"
+  ,"line_status_endpoint": "http://snek:8000/scale/api/schedule_status/mitts"
   ,"line_network_period": 30
   ,"line_height": 15
   ,"line_margin": -22
