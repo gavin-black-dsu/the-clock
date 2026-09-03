@@ -1364,7 +1364,9 @@ class Clock:
         self.canvas = opaque_surface((sw, sh)).convert_alpha()
         self.sky = SkyCache(cfg, self.tz)
         self.touches: list[tuple[tuple[int, int], float]] = []
-        self._last_key: tuple | None = None
+        self._drawn: dict[str, tuple] = {}      # element -> (state, last rect)
+        self._dim = 1.0
+        self._force_full = True
         self._unknown_weather: str | None = None
         # Anchor the drift phase to wall-clock time, then advance it
         # monotonically.  Starting from zero on every boot would replay the
@@ -1412,40 +1414,12 @@ class Clock:
         return out
 
     # -- the frame ----------------------------------------------------------
-    def frame_key(self, now: datetime) -> tuple:
-        """Everything that changes what the frame looks like.  Positions are
-        quantised so slow drift redraws a few times a second, not every frame."""
-        mono = time.monotonic() - self._t0
-        snap = self.store.snapshot()
-        shown = self.display_time(now)
-        is_day = self.sky.is_day(now)
-        theme = "day" if is_day else "night"
-        q = self.cfg.drift.quantum
-        A = self.assets
+    def _elements(self, now: datetime) -> list[tuple]:
+        """Everything drawable this frame as (name, sprite, x, y, content_key).
 
-        def pos(d: Drift) -> tuple[int, int]:
-            x, y = d.at(mono)
-            return int(x / q), int(y / q)
-
-        temp = snap.get("temp")
-        temp_txt = None
-        if temp is not None and temp.fresh(self.cfg.temp_stale_after):
-            temp_txt = f"{float(temp.value):.0f}\N{DEGREE SIGN}{self.cfg.temp_unit}"
-        weather = snap.get("weather")
-        weather_name = None
-        if weather is not None and weather.fresh(self.cfg.weather_stale_after):
-            weather_name = str(weather.value)
-        corner = shown.strftime("%A").lower() if is_day else self.sky.moon_icon(shown.date())
-
-        return (
-            tuple(glyph_sequence(shown)), theme, temp_txt, weather_name, corner,
-            round(self.dim_factor(shown), 3),
-            tuple((s.id, sev) for s, sev in self.visible_alerts(snap, time.monotonic())),
-            pos(A.drift_digits), pos(A.drift_temp), pos(A.drift_alerts),
-            pos(A.drift_weather), pos(A.drift_corner),
-        )
-
-    def render(self, now: datetime) -> None:
+        One entry per independently drifting thing.  `content_key` is whatever
+        would change that element's pixels other than its position.
+        """
         cfg, A = self.cfg, self.assets
         mono = time.monotonic() - self._t0
         snap = self.store.snapshot()
@@ -1453,72 +1427,164 @@ class Clock:
         is_day = self.sky.is_day(now)
         theme = "day" if is_day else "night"
         pad = cfg.padding
-
-        canvas = self.canvas
-        canvas.fill((0, 0, 0, 255))
+        out: list[tuple] = []
 
         # weather, top-left
         weather = snap.get("weather")
+        spr = None
+        name = None
         if weather is not None and weather.fresh(cfg.weather_stale_after):
             name = str(weather.value)
             spr = A.weather[theme].get(name)
-            if spr is not None:
-                dx, dy = A.drift_weather.at(mono)
-                blit_subpixel(canvas, spr, pad + dx, pad + dy)
-            elif name != self._unknown_weather:
+            if spr is None and name != self._unknown_weather:
                 self._unknown_weather = name
                 log.warning("no artwork for weather condition %r; expected one of %s",
                             name, ", ".join(sorted(A.weather[theme])) or "(none)")
+        dx, dy = A.drift_weather.at(mono)
+        out.append(("weather", spr, pad + dx, pad + dy, (theme, name)))
 
         # weekday sun / moon phase, top-right
-        if is_day:
-            spr = A.sun.get(shown.strftime("%A").lower())
-        else:
-            spr = A.moon.get(self.sky.moon_icon(shown.date()))
-        if spr is not None:
-            dx, dy = A.drift_corner.at(mono)
-            blit_subpixel(canvas, spr, A.sw - spr.w - pad + dx, pad + dy)
+        icon = shown.strftime("%A").lower() if is_day else self.sky.moon_icon(shown.date())
+        spr = A.sun.get(icon) if is_day else A.moon.get(icon)
+        dx, dy = A.drift_corner.at(mono)
+        x = (A.sw - spr.w - pad + dx) if spr else 0.0
+        out.append(("corner", spr, x, pad + dy, (theme, icon)))
 
         # alert row, centred above the temperature
-        active = [(spec.id, sev) for spec, sev in self.visible_alerts(snap, time.monotonic())]
+        active = tuple((spec.id, sev) for spec, sev in self.visible_alerts(snap, time.monotonic()))
         row = A.alert_row_sprite(theme, active)
-        if row is not None:
-            dx, dy = A.drift_alerts.at(mono)
-            blit_subpixel(canvas, row, (A.sw - row.w) / 2.0 + dx, A.alert_band_top + dy)
+        dx, dy = A.drift_alerts.at(mono)
+        x = ((A.sw - row.w) / 2.0 + dx) if row else 0.0
+        out.append(("alerts", row, x, A.alert_band_top + dy, (theme, active)))
 
         # temperature
         temp = snap.get("temp")
+        spr = None
+        text = None
         if temp is not None and temp.fresh(cfg.temp_stale_after):
             raw = cfg.temp_color_day if is_day else cfg.temp_color_night
-            b = (cfg.temp_brightness_day if is_day else cfg.temp_brightness_night)
+            b = cfg.temp_brightness_day if is_day else cfg.temp_brightness_night
             colour = tuple(min(255, int(c * b)) for c in raw)
-            spr = A.temp_sprite(f"{float(temp.value):.0f}\N{DEGREE SIGN}{cfg.temp_unit}", colour)
-            dx, dy = A.drift_temp.at(mono)
-            blit_subpixel(canvas, spr, (A.sw - spr.w) / 2.0 + dx, A.temp_ink_top + dy)
+            text = f"{float(temp.value):.0f}\N{DEGREE SIGN}{cfg.temp_unit}"
+            spr = A.temp_sprite(text, colour)
+        dx, dy = A.drift_temp.at(mono)
+        x = ((A.sw - spr.w) / 2.0 + dx) if spr else 0.0
+        out.append(("temp", spr, x, A.temp_ink_top + dy, (theme, text)))
 
         # the time
-        strip = A.strip_sprite(theme, glyph_sequence(shown))
+        glyphs = tuple(glyph_sequence(shown))
+        strip = A.strip_sprite(theme, glyphs)
         dx, dy = A.drift_digits.at(mono)
-        blit_subpixel(canvas, strip, A.strip_x + dx, A.strip_y + dy)
+        out.append(("digits", strip, A.strip_x + dx, A.strip_y + dy, (theme, glyphs)))
+        return out
 
-        dim = self.dim_factor(shown)
+    def render(self, now: datetime, full: bool = False) -> list[pygame.Rect]:
+        """Redraw only the elements that actually changed.
+
+        The digit strip is by far the most expensive thing on screen — its
+        four-tap sub-pixel blit is two thirds of a full frame — and it drifts
+        three times slower than the temperature.  Rebuilding the whole canvas
+        whenever anything moved therefore redrew the strip about three times
+        more often than it had moved.  Elements do not overlap, so each one is
+        cleared and redrawn on its own schedule instead.
+
+        Returns the rectangles that changed, for a partial screen update.
+        """
+        q = self.cfg.drift.quantum
+        dim = self.dim_factor(self.display_time(now))
+        if dim < 0.999:
+            # A whole-canvas multiply cannot be applied incrementally without
+            # dimming already-dimmed pixels, so night_dim redraws in full.
+            full = True
+        if dim != self._dim:
+            self._dim, full = dim, True
+
+        dirty: list[pygame.Rect] = []
+        if full:
+            self.canvas.fill((0, 0, 0, 255))
+            self._drawn.clear()
+            dirty.append(self.canvas.get_rect())
+
+        elements = self._elements(now)
+        planned = []
+        for name, spr, x, y, content in elements:
+            rect = (pygame.Rect(math.floor(x) - 1, math.floor(y) - 1, spr.w + 2, spr.h + 2)
+                    if spr is not None else None)
+            planned.append((name, spr, x, y, (content, int(x / q), int(y / q)), rect))
+
+        changed = {name for name, _, _, _, state, _ in planned
+                   if full or (self._drawn.get(name) or (None, None))[0] != state}
+
+        # Clearing one element's rectangle would erase any neighbour that
+        # overlaps it, so a redraw pulls in everything it touches.  Nothing
+        # overlaps in the shipped layout, but a config with big icons or many
+        # alerts can make them meet, and a silently corrupted frame that only
+        # appears at the extremes of a 3-hour drift is not a good failure mode.
+        def rects_of(entry):
+            prev = self._drawn.get(entry[0])
+            return [r for r in (entry[5], prev[1] if prev else None) if r is not None]
+
+        growing = True
+        while growing:
+            growing = False
+            hot = [r for e in planned if e[0] in changed for r in rects_of(e)]
+            for entry in planned:
+                if entry[0] in changed:
+                    continue
+                if any(r.colliderect(h) for r in rects_of(entry) for h in hot):
+                    changed.add(entry[0])
+                    growing = True
+
+        if not full:
+            for entry in planned:
+                if entry[0] not in changed:
+                    continue
+                prev = self._drawn.get(entry[0])
+                if prev is not None and prev[1] is not None:
+                    self.canvas.fill((0, 0, 0, 255), prev[1])
+                    dirty.append(prev[1])
+
+        for name, spr, x, y, state, rect in planned:
+            if name not in changed:
+                continue
+            if spr is not None:
+                blit_subpixel(self.canvas, spr, x, y)
+                if not full:
+                    dirty.append(rect)
+            self._drawn[name] = (state, rect)
+
         if dim < 0.999:
             m = max(0, min(255, int(round(dim * 255))))
-            canvas.fill((m, m, m, 255), None, pygame.BLEND_RGB_MULT)
+            self.canvas.fill((m, m, m, 255), None, pygame.BLEND_RGB_MULT)
+        return dirty
 
-    def present(self) -> None:
-        """Canvas → screen, scaling if the panel is not the logical size."""
-        if self.screen.get_size() != self.canvas.get_size():
-            try:
-                pygame.transform.smoothscale(self.canvas, self.screen.get_size(), self.screen)
-            except (ValueError, pygame.error):
-                self.screen.blit(pygame.transform.smoothscale(
-                    self.canvas, self.screen.get_size()), (0, 0))
-        else:
-            self.screen.blit(self.canvas, (0, 0))
-        for pos, _ in self.touches:
-            pygame.draw.circle(self.screen, TOUCH_COLOR, pos, TOUCH_RADIUS, 3)
-        pygame.display.flip()
+    def present(self, dirty: Sequence[pygame.Rect] | None = None) -> None:
+        """Canvas → screen.  `dirty` limits the copy to the rectangles that
+        actually changed; None means the whole frame."""
+        scaled = self.screen.get_size() != self.canvas.get_size()
+        if scaled or dirty is None or self.touches:
+            # Touch ripples are drawn straight onto the screen and are not in
+            # the canvas, so a partial update would not erase them.
+            if scaled:
+                try:
+                    pygame.transform.smoothscale(self.canvas, self.screen.get_size(), self.screen)
+                except (ValueError, pygame.error):
+                    self.screen.blit(pygame.transform.smoothscale(
+                        self.canvas, self.screen.get_size()), (0, 0))
+            else:
+                self.screen.blit(self.canvas, (0, 0))
+            for pos, _ in self.touches:
+                pygame.draw.circle(self.screen, TOUCH_COLOR, pos, TOUCH_RADIUS, 3)
+            pygame.display.flip()
+            return
+        if not dirty:
+            return
+        clip = self.screen.get_rect()
+        rects = [r.clip(clip) for r in dirty]
+        rects = [r for r in rects if r.width and r.height]
+        for r in rects:
+            self.screen.blit(self.canvas, r, r)
+        pygame.display.update(rects)
 
     # -- main loop ----------------------------------------------------------
     GIVE_UP_AFTER = 60          # consecutive failing ticks
@@ -1576,18 +1642,17 @@ class Clock:
             had_touches = bool(self.touches)
             self.touches[:] = [t for t in self.touches if t[1] > mono]
 
-            key = self.frame_key(now)
-            if key != self._last_key:
-                self._last_key = key
-                try:
-                    self.render(now)
-                except Exception:
-                    log.exception("render failed; keeping the previous frame")
-                    self._last_key = None
-                else:
-                    self.present()
+            try:
+                dirty = self.render(now, full=self._force_full)
+            except Exception:
+                log.exception("render failed; keeping the previous frame")
+                self._force_full = True         # rebuild from scratch next time
+                return
+            self._force_full = False
+            if dirty:
+                self.present(None if self.touches or had_touches else dirty)
             elif self.touches or had_touches:
-                self.present()
+                self.present(None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1727,7 +1792,7 @@ def _screenshot(clock: Clock, store: Store, args) -> None:
         aid, _, sev = item.partition("=")
         store.put(f"alert:{aid.strip()}",
                   Reading(value=(sev or "alarm").strip(), fetched_at=time.monotonic(), ok=True))
-    clock.render(now)
+    clock.render(now, full=True)
     try:
         pygame.image.save(clock.canvas, str(args.screenshot))
     except pygame.error:                               # pygame built without SDL_image
