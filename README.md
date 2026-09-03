@@ -51,6 +51,7 @@ rather than one crash at a time.
 | `padding` | `40` | margin kept clear at the screen edges |
 | `screen_width` / `screen_height` | panel native | force a logical size; the frame is scaled to the panel if they differ |
 | `fps` | `30` | event-loop tick rate (not the redraw rate — see below) |
+| `digit_scale` | `1.0` | shrink the digits to buy drift room; see Burn-in |
 
 ### Temperature
 
@@ -172,12 +173,12 @@ region instead of retracing a loop. Two details make it work:
   `amplitude · (2π/60) · mean(1/period_minutes)`, which for the shipped config
   is 0.057 px/s for the digits — one pixel every seventeen seconds. That is
   well over an order of magnitude below the speed at which a person can see a
-  high-contrast edge move. The clock only redraws once something has shifted
-  by `drift.quantum` (1/16 px), which averages 2.0 redraws a second over 24 h
-  — about 2% of one core. At that quantum no pixel changes by more than
-  5/255 between consecutive frames; at 1/8 px the worst case reaches 8/255
-  across ~350 pixels, which is where stepping would start to be visible.
-  Both the amplitude and the peak speed are logged at startup.
+  high-contrast edge move. Each element is redrawn only once it has shifted by
+  `drift.quantum` (1/16 px), independently of the others. At that quantum no
+  pixel changes by more than 5/255 between consecutive frames; at 1/8 px the
+  worst case reaches 8/255 across ~350 pixels, which is where stepping would
+  start to be visible. Both the amplitude and the peak speed are logged at
+  startup.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -263,6 +264,28 @@ missing or stale, that element is simply not drawn.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `net_timeout` | `4` | socket timeout for temperature and weather |
+
+## Cost
+
+Elements are redrawn one at a time, each on its own schedule, and only the
+changed rectangles are copied to the screen. That matters because the redraw
+is dominated by one thing — on the Raspberry Pi that drives the panel, the
+digit strip's four-tap sub-pixel blit is 67 ms of a 103 ms full frame — and
+the strip drifts three times slower than the temperature above it. Rebuilding
+the whole canvas whenever anything moved redrew it three times more often
+than it had actually moved.
+
+Averaged over 24 h of the drift path, with the shipped config at 1920x1080:
+
+| | render + present | of one core |
+| --- | --- | --- |
+| Raspberry Pi 4 (the panel) | 66 ms per second | **6.6%** |
+| desktop (Ryzen, software SDL) | 6 ms per second | **0.6%** |
+
+Before per-element redraws the same Pi measured 10–35%, varying with where the
+drift happened to be on its path. Memory is about 180 MB resident; peak during
+startup is ~120 MB because the artwork is loaded, scaled and dropped one file
+at a time rather than all at once.
 
 ## Themes
 
