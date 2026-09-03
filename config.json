@@ -1,27 +1,89 @@
 {
   "theme": "succulent",
-  "brightness_day":   1.0,
+  "brightness_day": 1.0,
   "brightness_night": 0.8,
-  "brightness_sun":   1.0,
-  "brightness_moon":  0.7
-  ,"temp_brightness_day": 1.0
-  ,"temp_brightness_night": 0.5
-  ,"temp_color_day": [150,200,250]
-  ,"temp_color_night": [100,0,155]
-  ,"temp_font_size": 364
-  ,"temp_padding_top": 40
-  ,"temp_endpoint": "http://snek:8000/habitat/api/most_recent"
-  ,"temp_network_period": 120
-  ,"brightness_weather_day": 1.0
-  ,"brightness_weather_night": 0.5
-  ,"weather_endpoint": "http://snek:8000/weather/api/condition"
-  ,"weather_network_period": 900
-  ,"time_adjust": 1
-  ,"line_okay":  [0, 55, 0]
-  ,"line_warn":  [85, 85, 0]
-  ,"line_alarm": [255, 0, 0]
-  ,"line_status_endpoint": "http://snek:8000/scale/api/schedule_status/mitts"
-  ,"line_network_period": 30
-  ,"line_height": 15
-  ,"line_margin": -22
+  "brightness_sun": 1.0,
+  "brightness_moon": 0.7,
+  "brightness_weather_day": 1.0,
+  "brightness_weather_night": 0.5,
+  "temp_endpoint": "http://snek:8000/habitat/api/most_recent",
+  "temp_field": "Temperature",
+  "temp_network_period": 120,
+  "temp_font_size": 364,
+  "temp_padding_top": 24,
+  "temp_color_day": [
+    150,
+    200,
+    250
+  ],
+  "temp_color_night": [
+    100,
+    0,
+    155
+  ],
+  "temp_brightness_day": 1.0,
+  "temp_brightness_night": 0.5,
+  "weather_endpoint": "http://snek:8000/weather/api/condition",
+  "weather_field": "value",
+  "weather_network_period": 900,
+  "time_adjust": 1,
+  "alerts": {
+    "icon_size": 88,
+    "icon_gap": 40,
+    "gap_below": 28,
+    "brightness_day": 1.0,
+    "brightness_night": 0.75,
+    "items": [
+      {
+        "id": "weight",
+        "icon": "scale",
+        "endpoint": "http://snek:8000/scale/api/schedule_status/mitts",
+        "field": "status",
+        "period": 300,
+        "show_at": "alarm"
+      },
+      {
+        "id": "plants",
+        "icon": "plant",
+        "endpoint": "",
+        "field": "status",
+        "period": 600,
+        "show_at": "warn"
+      },
+      {
+        "id": "logs",
+        "icon": "logs",
+        "endpoint": "",
+        "field": "status",
+        "period": 300,
+        "show_at": "warn"
+      },
+      {
+        "id": "camera",
+        "icon": "camera",
+        "endpoint": "",
+        "field": "status",
+        "period": 300,
+        "show_at": "warn"
+      }
+    ]
+  },
+  "drift": {
+    "max_x": 160,
+    "min_x": 48,
+    "max_y": 40,
+    "icon_max": 40,
+    "top_y": 16,
+    "periods_minutes": [
+      71,
+      113,
+      179
+    ]
+  },
+  "night_dim": {
+    "enabled": false,
+    "start": "01:00",
+    "end": "06:00",
+    "brightness": 0.35
+  }
 }
