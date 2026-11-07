@@ -230,7 +230,10 @@ ghost, seen from 1 m and from 2 m. For the succulent theme:
 | as shipped, with the default digit envelope (`max_y: 40`) | 17× | 10× |
 | this build, `overall_brightness: 0.5` | 196× | 100× |
 
-The Halloween theme does better still, at 81× and 45× respectively.
+The Halloween theme does better still, at 81× and 45× respectively. The fall
+theme, which the shipped config uses, reaches 145× and 58×. Most of that gain
+comes from emitting less light, since its daytime artwork gives off about 60%
+of what succulent's does.
 
 The model tracks wear per subpixel and in linear light. Aging is superlinear in
 drive (stress goes as L^1.7), and the lost luminance grows like
@@ -326,12 +329,12 @@ images/alerts/{scale,plant,logs,camera}.png   alert icons, shared by all themes
 ```
 
 `colon`, `am` and `pm` are drawn at half width; the digits are full width. New
-themes just need a new folder — `halloween` symlinks `sun`, `moon` and
-`weather` back to `succulent` rather than duplicating them.
+themes just need a new folder. The `halloween` and `fall` folders symlink
+`sun`, `moon`, and `weather` back to `succulent` rather than duplicating them.
 
 ## AI/ML usage
 
 This code was developed using [Vibe Coding](https://en.wikipedia.org/wiki/Vibe_coding)
 with OpenAI's Codex and later with Claude Code. The artwork was generated using
-Sora and gpt-image-2. Minimal manual editing was used for both the code and the
-images.
+Sora, gpt-image-2, and gpt-image-2.5. Minimal manual editing was used for both
+the code and the images.
