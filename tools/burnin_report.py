@@ -1,52 +1,49 @@
 #!/usr/bin/env python3
-"""Estimate how much OLED wear the clock's anti burn-in drift actually prevents.
+"""Forecast how long the panel lasts before a ghost shows, for a given config.
 
-Every element on screen is a fixed image translated by a drift offset d(t).
-Cumulative wear is the time-integral of luminance, and "translate, then
-integrate" is exactly a convolution:
+Burn-in is measured against the one panel we know the answer for: the first
+one, which ran from May 2025 with a ±6 px jump every five minutes and was
+visibly burned in by September 2026.  Everything is reported as "this config
+takes N times as long to reach that panel's ghost".
 
-    wear(x) = Σ_elements  E[element](x)  ⊛  p_drift_of_that_element(x)
+How a year of wear is built up:
 
-where E[element] is the time-averaged image of that element with no drift
-(each glyph, icon and temperature reading weighted by how often it is shown)
-and p_drift is the occupancy histogram of its drift path.  Wear is linear in
-luminance, so one convolution per element gives an exact map for an
-arbitrarily long run, in about a second.
+  * The year is replayed minute by minute: real sunrise and sunset at the
+    configured location, `time_adjust`, `night_dim`, which glyph is in which
+    slot, the weekday sun and the moon phase.  The temperature uses the
+    habitat's measured spread (it read 70-78°F all year, so the "7" and "°F"
+    never change), the weather a climatological guess.
+  * Wear is per subpixel and in linear light: brightness settings multiply
+    the sRGB code values, so `0.7` emits about 45% of the light, not 70%.
+  * Aging is superlinear in drive, stress = L^n with n ≈ 1.7 for OLED
+    emitters, and the luminance loss grows like (stress·time)^β with β ≈ 0.6.
+    Blue ages about three times faster than red and green.
+  * Drift is a convolution: the time-averaged image of each element, smeared
+    by the occupancy of that element's exact drift path over the year.
+  * What makes a ghost *visible* is judged through the eye's contrast
+    sensitivity at real viewing distances on this panel's 0.0634 mm pixels.
+    A sharp edge you cannot resolve from across the room does not count; a
+    soft blob the size of an icon does.
 
-Everything is read from the running code — `clock.Assets` supplies the real
-scaled artwork, the real positions and the real drift objects — so this report
-cannot quietly diverge from what is on the panel.
-
-Two numbers come out of it:
-
-  peak wear   - the worst pixel's total luminance·time.  This is what
-                physically ages the panel, and drift barely moves it: the
-                strokes of these glyphs are far wider than any offset that
-                fits on screen, so the middle of a stroke is lit either way.
-                Brightness and duty cycle are the levers here, not motion.
-  ghost edge  - the largest gradient of the wear map.  This is what makes
-                burn-in *visible*: a sharp step between worn and unworn pixels
-                reads as a legible ghost of the digits, a smooth ramp does
-                not.  Drift attacks this directly, and it is the real win.
-
-This is a model, not a panel simulation.  Wear is taken as linear in
-luminance × time, which understates real OLED aging (roughly superlinear in
-drive current, with blue degrading fastest), so read the ratios as relative
-rather than as a forecast.
+The constants are not published for this module, so read the output as
+relative — this config against the old panel — not as an absolute lifetime.
+The ranking of what helps holds across n = 1.3-2.0 and β = 0.5-0.7.
 
 Needs numpy and Pillow (development only; the clock itself needs neither):
     pip install numpy pillow
 Run:
-    python3 tools/burnin_report.py [--days 30] [--config config.json] [--heatmap out.png]
+    python3 tools/burnin_report.py [--config config.json] [--per-element] [--heatmap out.png]
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import os
 import pathlib
 import sys
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -54,163 +51,193 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 SCREEN_W, SCREEN_H = 1920, 1080
-DAY_FRACTION = 0.5
+PITCH_MM = 5.5 * 25.4 / math.hypot(1080, 1920)        # Waveshare 5.5" AMOLED, 0.0634 mm
+LUMA = np.array([0.2126, 0.7152, 0.0722])
+BLUE_AGING = 3.0
+DISTANCES = (1.0, 2.0)                                # metres
 
-# How often a 12-hour clock shows each glyph in each of the six slots.
-SLOT_PROBS = [
-    {"0": 9 / 12, "1": 3 / 12},                                        # hour tens
-    {**{d: 1 / 12 for d in "34567890"}, "1": 2 / 12, "2": 2 / 12},     # hour ones
-    {"colon": 1.0},
-    {d: 1 / 6 for d in "012345"},                                      # minute tens
-    {d: 1 / 10 for d in "0123456789"},                                 # minute ones
-    {"am": 0.5, "pm": 0.5},
-]
+# Measured: the habitat's displayed reading over a year (portal habitat/api/data?range=year).
+TEMPERATURES = {70: .022, 71: .113, 72: .185, 73: .138, 74: .110, 75: .152,
+                76: .176, 77: .085, 78: .019}
+# A guess for southern New Hampshire; the weather endpoint keeps no history.
+WEATHER_DAY = {"clear_day": .22, "scattered": .14, "clouds": .20, "overcast": .20, "rain": .08,
+               "drizzle": .03, "shower": .02, "mist": .03, "snow_day": .06, "thunderstorm": .02}
+WEATHER_NIGHT = {**{k: v for k, v in WEATHER_DAY.items() if k not in ("clear_day", "snow_day")},
+                 "clear_night": .22, "snow_night": .06}
 
-# A plausible spread of indoor readings, so the temperature block is averaged
-# over the digits it actually shows rather than one frozen value.
-TEMPERATURES = range(58, 86)
-
-
-def luma(rgb: np.ndarray) -> np.ndarray:
-    return 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+# The panel that burned in, and the settings it ran at.
+OLD_PANEL = dict(overall_brightness=1.0, brightness_day=1.0, brightness_night=0.8,
+                 brightness_sun=1.0, brightness_moon=0.7, brightness_weather_day=1.0,
+                 brightness_weather_night=0.5, temp_brightness_day=1.0, temp_brightness_night=0.5)
+OLD_JUMP_PX = 6
+ELEMENTS = ("digits", "temp", "corner", "weather")
 
 
-def surface_luma(surf) -> np.ndarray:
-    """(h, w) luminance of a pygame surface."""
+def srgb_to_linear(code: np.ndarray) -> np.ndarray:
+    c = np.asarray(code, np.float64) / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def rgb(surf) -> np.ndarray:
     import pygame
-    return luma(pygame.surfarray.array3d(surf).transpose(1, 0, 2).astype(np.float32))
+    return pygame.surfarray.array3d(surf).transpose(1, 0, 2).astype(np.float64)
 
 
-def sprite_luma(spr) -> np.ndarray:
-    """Same, for a Sprite, with its 1px border removed."""
-    return surface_luma(spr.img)[1:-1, 1:-1]
+def year_of_minutes(C, cfg, days: int) -> dict:
+    """Hours per day spent in each displayed state, keyed per element."""
+    tz = C.resolve_tz(cfg.timezone)
+    sky = C.SkyCache(cfg, tz)
+    nd = cfg.night_dim
+    start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    hours: dict[str, dict] = {e: {} for e in ELEMENTS}
+
+    def add(element, key):
+        hours[element][key] = hours[element].get(key, 0) + 1
+
+    for minute in range(days * 1440):
+        now = start + timedelta(minutes=minute)
+        theme = "day" if sky.is_day(now) else "night"
+        shown = now + timedelta(hours=cfg.time_adjust)
+        dim = 1.0
+        if nd.enabled:                                # mirrors Clock.dim_factor
+            m = shown.hour * 60 + shown.minute
+            inside = (nd.start <= m < nd.end) if nd.start <= nd.end else (m >= nd.start or m < nd.end)
+            dim = nd.brightness if inside else 1.0
+        for slot, glyph in enumerate(C.glyph_sequence(shown)):
+            add("digits", (slot, glyph, theme, dim))
+        icon = shown.strftime("%A").lower() if theme == "day" else sky.moon_icon(shown.date())
+        add("corner", (icon, theme, dim))
+        add("temp", (theme, dim))
+        add("weather", (theme, dim))
+    per_day = 1.0 / (days * 60.0)
+    return {e: {k: v * per_day for k, v in h.items()} for e, h in hours.items()}
 
 
-def place(canvas: np.ndarray, patch: np.ndarray, x: int, y: int, weight: float) -> None:
-    h, w = patch.shape
+def place(canvas: np.ndarray, patch: np.ndarray, x: float, y: float, weight: float) -> None:
+    h, w = patch.shape[:2]
+    x, y = int(round(x)), int(round(y))
     y0, x0 = max(0, y), max(0, x)
     y1, x1 = min(canvas.shape[0], y + h), min(canvas.shape[1], x + w)
-    if y1 <= y0 or x1 <= x0:
-        return
-    canvas[y0:y1, x0:x1] += patch[y0 - y:y1 - y, x0 - x:x1 - x] * weight
+    if y1 > y0 and x1 > x0:
+        canvas[y0:y1, x0:x1] += patch[y0 - y:y1 - y, x0 - x:x1 - x] * weight
 
 
-def build_layers(cfg, assets) -> list[tuple[np.ndarray, object, str]]:
-    """One time-averaged luminance layer per independently drifting element."""
-    A = assets
-    pad = cfg.padding
-    layers: list[tuple[np.ndarray, object, str]] = []
+def stress_layers(cfg, A, hours: dict, n: float) -> dict[str, np.ndarray]:
+    """Per element, the stress each subpixel takes per day with no motion, in
+    hours of full drive.  Brightness is already baked into the artwork by
+    `Assets`, exactly as on screen; night_dim multiplies on top."""
+    def stress(code, dim):
+        return srgb_to_linear(code * dim) ** n
 
-    # ── digits ───────────────────────────────────────────────────────────
-    strip = np.zeros((SCREEN_H, SCREEN_W), np.float32)
-    widths = (A.w_full, A.w_full, A.w_half, A.w_full, A.w_full, A.w_half)
-    x = int(A.strip_x)
-    for probs, w in zip(SLOT_PROBS, widths):
-        for name, p in probs.items():
-            for theme, tf in (("day", DAY_FRACTION), ("night", 1 - DAY_FRACTION)):
-                place(strip, surface_luma(A.digits[theme][name]), x, int(A.strip_y), p * tf)
-        x += w
-    layers.append((strip, A.drift_digits, "digits"))
-
-    # ── temperature ──────────────────────────────────────────────────────
-    temp = np.zeros((SCREEN_H, SCREEN_W), np.float32)
-    for theme, tf, raw, b in (
-        ("day", DAY_FRACTION, cfg.temp_color_day, cfg.temp_brightness_day),
-        ("night", 1 - DAY_FRACTION, cfg.temp_color_night, cfg.temp_brightness_night),
-    ):
-        colour = tuple(min(255, int(c * b)) for c in raw)
-        for value in TEMPERATURES:
+    layers = {e: np.zeros((SCREEN_H, SCREEN_W, 3)) for e in ELEMENTS}
+    offsets = [0, A.w_full, 2 * A.w_full, 2 * A.w_full + A.w_half,
+               3 * A.w_full + A.w_half, 4 * A.w_full + A.w_half]
+    cache: dict = {}
+    for (slot, glyph, theme, dim), h in hours["digits"].items():
+        key = (glyph, theme, dim)
+        if key not in cache:
+            cache[key] = stress(rgb(A.digits[theme][glyph]), dim)
+        place(layers["digits"], cache[key], A.strip_x + offsets[slot], A.strip_y, h)
+    for (theme, dim), h in hours["temp"].items():
+        raw = cfg.temp_color_day if theme == "day" else cfg.temp_color_night
+        b = cfg.temp_brightness_day if theme == "day" else cfg.temp_brightness_night
+        colour = tuple(min(255, int(c * b * cfg.overall_brightness)) for c in raw)
+        for value, p in TEMPERATURES.items():
             spr = A.temp_sprite(f"{value}\N{DEGREE SIGN}{cfg.temp_unit}", colour)
-            place(temp, sprite_luma(spr), int((SCREEN_W - spr.w) / 2), int(A.temp_ink_top),
-                  tf / len(TEMPERATURES))
-    layers.append((temp, A.drift_temp, "temperature"))
-
-    # ── weather corner ───────────────────────────────────────────────────
-    weather = np.zeros((SCREEN_H, SCREEN_W), np.float32)
-    for theme, tf in (("day", DAY_FRACTION), ("night", 1 - DAY_FRACTION)):
-        icons = A.weather[theme]
-        for spr in icons.values():
-            place(weather, sprite_luma(spr), pad, pad, tf / max(1, len(icons)))
-    if weather.any():
-        layers.append((weather, A.drift_weather, "weather icon"))
-
-    # ── sun / moon corner ────────────────────────────────────────────────
-    corner = np.zeros((SCREEN_H, SCREEN_W), np.float32)
-    for spr in A.sun.values():
-        place(corner, sprite_luma(spr), SCREEN_W - spr.w - pad, pad,
-              DAY_FRACTION / len(A.sun))
-    for spr in A.moon.values():
-        place(corner, sprite_luma(spr), SCREEN_W - spr.w - pad, pad,
-              (1 - DAY_FRACTION) / len(A.moon))
-    layers.append((corner, A.drift_corner, "sun/moon icon"))
-
+            place(layers["temp"], stress(rgb(spr.img)[1:-1, 1:-1], dim),
+                  (SCREEN_W - spr.w) / 2.0, A.temp_ink_top, h * p)
+    for (icon, theme, dim), h in hours["corner"].items():
+        spr = (A.sun if theme == "day" else A.moon).get(icon)
+        if spr is not None:
+            place(layers["corner"], stress(rgb(spr.img)[1:-1, 1:-1], dim),
+                  SCREEN_W - spr.w - cfg.padding, cfg.padding, h)
+    for (theme, dim), h in hours["weather"].items():
+        for name, p in (WEATHER_DAY if theme == "day" else WEATHER_NIGHT).items():
+            spr = A.weather[theme].get(name)
+            if spr is not None:
+                place(layers["weather"], stress(rgb(spr.img)[1:-1, 1:-1], dim),
+                      cfg.padding, cfg.padding, h * p)
     return layers
 
 
-def drift_occupancy(drift, days: int, step_s: int = 30) -> np.ndarray:
-    """Histogram of the path this exact Drift object walks, over `days` days."""
-    R = int(math.ceil(max(drift.amp_x, drift.amp_y))) + 2
-    k = np.zeros((2 * R + 1, 2 * R + 1), np.float64)
-    for t in range(0, days * 86400, step_s):
-        dx, dy = drift.at(t)
-        k[round(dy) + R, round(dx) + R] += 1
-    return k / k.sum()
-
-
-def jump_occupancy(radius: int, days: int, seed: int = 7) -> np.ndarray:
-    """The old design: a uniform random jump of +/-radius every five minutes."""
-    rng = np.random.default_rng(seed)
-    R = radius + 2
-    k = np.zeros((2 * R + 1, 2 * R + 1), np.float64)
-    for _ in range(days * 24 * 12):
-        k[int(rng.integers(-radius, radius + 1)) + R,
-          int(rng.integers(-radius, radius + 1)) + R] += 1
-    return k / k.sum()
-
-
-def still_occupancy() -> np.ndarray:
+def still() -> np.ndarray:
     k = np.zeros((3, 3))
     k[1, 1] = 1.0
     return k
 
 
+def jump(radius: int) -> np.ndarray:
+    """The old design: a uniformly random jump within ±radius every five minutes."""
+    return np.full((2 * radius + 1, 2 * radius + 1), 1.0 / (2 * radius + 1) ** 2)
+
+
+def path(drift, days: int, step_s: float = 60.0) -> np.ndarray:
+    """Occupancy of the path this exact Drift object walks, bilinearly splatted
+    the way blit_subpixel draws it."""
+    if drift.amp_x == 0 and drift.amp_y == 0:
+        return still()
+    t = datetime.now().timestamp() + np.arange(0, days * 86400, step_s)
+    dx, dy = drift.at(t)
+    R = int(math.ceil(max(drift.amp_x, drift.amp_y))) + 2
+    k = np.zeros((2 * R + 1, 2 * R + 1))
+    fx, fy = np.floor(dx), np.floor(dy)
+    ux, uy = dx - fx, dy - fy
+    ix, iy = fx.astype(int) + R, fy.astype(int) + R
+    for ox, oy, w in ((0, 0, (1 - ux) * (1 - uy)), (1, 0, ux * (1 - uy)),
+                      (0, 1, (1 - ux) * uy), (1, 1, ux * uy)):
+        np.add.at(k, (iy + oy, ix + ox), w)
+    return k / k.sum()
+
+
 def convolve(img: np.ndarray, ker: np.ndarray) -> np.ndarray:
     ih, iw = img.shape
     kh, kw = ker.shape
-    fh = 1 << (ih + kh - 2).bit_length()
-    fw = 1 << (iw + kw - 2).bit_length()
+    fh = 1 << (ih + kh).bit_length()
+    fw = 1 << (iw + kw).bit_length()
     out = np.fft.irfft2(np.fft.rfft2(img, (fh, fw)) * np.fft.rfft2(ker, (fh, fw)), (fh, fw))
     return out[kh // 2:kh // 2 + ih, kw // 2:kw // 2 + iw]
 
 
-def wear_map(layers, kernel_for) -> np.ndarray:
-    total = np.zeros((SCREEN_H, SCREEN_W), np.float64)
-    for layer, drift, _ in layers:
-        total += convolve(layer.astype(np.float64), kernel_for(drift))
-    return total
+def worn(layers: dict, kernels: dict) -> np.ndarray:
+    total = np.zeros((SCREEN_H, SCREEN_W, 3))
+    for name, layer in layers.items():
+        for c in range(3):
+            total[..., c] += convolve(layer[..., c], kernels[name])
+    return np.clip(total, 0, None)
 
 
-def report(name: str, wear: np.ndarray, ref: tuple | None) -> tuple:
-    gy, gx = np.gradient(wear)
-    edge = float(np.hypot(gx, gy).max())
-    peak = float(wear.max())
-    lit = wear[wear > peak * 0.02]
-    rel = ""
-    if ref:
-        rel = f"   {ref[0] / peak:5.2f}x peak   {ref[1] / edge:7.1f}x ghost edge"
-    print(f"  {name:<26s} peak {peak:8.1f}   peak/mean {peak / lit.mean():4.2f}"
-          f"   ghost edge {edge:7.3f}{rel}")
-    return peak, edge
+def damage(stress: np.ndarray, beta: float) -> np.ndarray:
+    """Luminance lost on a plain white test screen, up to a common factor."""
+    return ((stress * np.array([1.0, 1.0, BLUE_AGING])) ** beta) @ LUMA
+
+
+def as_seen(D: np.ndarray, metres: float) -> np.ndarray:
+    """D filtered by the eye's contrast sensitivity (peak 4 cycles/degree)."""
+    ppd = metres * 1000 * math.tan(math.radians(1)) / PITCH_MM
+    h, w = D.shape
+    fh, fw = 1 << (h + h // 2).bit_length(), 1 << (w + w // 2).bit_length()   # no wrap-around
+    f = np.hypot(np.fft.rfftfreq(fw)[None, :], np.fft.fftfreq(fh)[:, None]) * ppd
+    csf = f ** 0.8 * np.exp(-0.2 * f)
+    return np.abs(np.fft.irfft2(np.fft.rfft2(D, (fh, fw)) * csf / csf.max(), (fh, fw))[:h, :w])
+
+
+REGIONS = {"digits": (0, SCREEN_W, 440, SCREEN_H), "temp": (440, 1480, 100, 440),
+           "corner": (1480, SCREEN_W, 0, 440), "weather": (0, 440, 0, 440)}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=pathlib.Path, default=ROOT / "config.json")
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--heatmap", type=pathlib.Path, help="write the wear map as a PNG")
+    ap.add_argument("--theme", help="override the config's theme")
+    ap.add_argument("--days", type=int, default=365, help="length of the replay (a full year "
+                    "by default, so every season's day length is in it)")
+    ap.add_argument("--n", type=float, default=1.7, help="aging exponent on drive level")
+    ap.add_argument("--beta", type=float, default=0.6, help="stretched-exponential exponent")
     ap.add_argument("--per-element", action="store_true",
-                    help="also report each element's own worst pixel")
+                    help="also say which element's ghost would show first")
+    ap.add_argument("--heatmap", type=pathlib.Path,
+                    help="write this config's wear, as seen from 1 m, as a PNG")
     args = ap.parse_args()
 
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -222,55 +249,53 @@ def main() -> int:
     pygame.display.set_mode((320, 240))
 
     cfg = C.load_config(args.config)
-    assets = C.Assets(cfg, SCREEN_W, SCREEN_H)
-    d = assets.drift_digits
-    print(f"theme {cfg.theme}: strip {assets.strip_w}x{assets.digit_h}, "
-          f"top_reserved {assets.top_reserved}, digits drift +/-{d.amp_x:.0f}/+/-{d.amp_y:.0f} px, "
-          f"peak speed {d.peak_speed():.4f} px/s "
+    if args.theme:
+        cfg = dataclasses.replace(cfg, theme=args.theme)
+    old = dataclasses.replace(cfg, night_dim=C.NightDim(), **OLD_PANEL)
+    A = C.Assets(cfg, SCREEN_W, SCREEN_H)
+    A_old = C.Assets(old, SCREEN_W, SCREEN_H)
+    d = A.drift_digits
+    print(f"theme {cfg.theme}, overall_brightness {cfg.overall_brightness:g}: digits drift "
+          f"±{d.amp_x:.0f}/±{d.amp_y:.0f} px at {d.peak_speed():.4f} px/s "
           f"(1 px every {1 / max(d.peak_speed(), 1e-9):.0f} s)")
+    print(f"replaying {args.days} days minute by minute ...", flush=True)
 
-    layers = build_layers(cfg, assets)
+    hours = year_of_minutes(C, cfg, args.days)
+    hours_old = hours if not cfg.night_dim.enabled else year_of_minutes(C, old, args.days)
+    layers = stress_layers(cfg, A, hours, args.n)
+    drifts = {"digits": A.drift_digits, "temp": A.drift_temp,
+              "corner": A.drift_corner, "weather": A.drift_weather}
+    runs = {
+        "old panel (±6 px jumps, its settings)":
+            worn(stress_layers(old, A_old, hours_old, args.n), dict.fromkeys(ELEMENTS, jump(OLD_JUMP_PX))),
+        "this config with no drift": worn(layers, dict.fromkeys(ELEMENTS, still())),
+        "this config": worn(layers, {e: path(drifts[e], args.days) for e in ELEMENTS}),
+    }
+    seen = {name: {m: as_seen(damage(S, args.beta), m) for m in DISTANCES}
+            for name, S in runs.items()}
+    ref = seen["old panel (±6 px jumps, its settings)"]
 
-    # night_dim multiplies the whole canvas on top of brightness_night, so fold
-    # it into a scalar on the night half of every layer.  Layers are already a
-    # day/night mix, so apply it as an overall factor on total emitted light.
-    nd = cfg.night_dim
-    dim_factor = 1.0
-    if nd.enabled:
-        span = ((nd.end - nd.start) % (24 * 60)) or 24 * 60
-        night_h = 12.0                                  # rough annual mean
-        inside = min(span / 60.0, night_h)
-        dim_factor = 1.0 - (1.0 - nd.brightness) * (inside / 24.0)
-        print(f"night_dim: {inside:.1f}h/day at x{nd.brightness} -> "
-              f"x{dim_factor:.3f} on total emitted light")
-    print(f"elements: {', '.join(n for _, _, n in layers)}")
-    print(f"simulating {args.days} days\n")
-
-    ref = report("no drift at all", wear_map(layers, lambda _: still_occupancy()) * dim_factor,
-                 None)
-    report("old: +/-6 px every 5 min",
-           wear_map(layers, lambda _: jump_occupancy(6, args.days)) * dim_factor, ref)
-    wear = wear_map(layers, lambda dr: drift_occupancy(dr, args.days)) * dim_factor
-    report("this build", wear, ref)
+    print(f"\ntime to reach the old panel's ghost, as a multiple of the time it took "
+          f"(n={args.n:g}, beta={args.beta:g})")
+    print(f"  {'':40s}" + "".join(f"{f'from {m:g} m':>12s}" for m in DISTANCES))
+    for name, by_m in seen.items():
+        cells = "".join(f"{(ref[m].max() / by_m[m].max()) ** (1 / args.beta):11.1f}x"
+                        for m in DISTANCES)
+        print(f"  {name:40s}{cells}")
+    S = runs["this config"]
+    print(f"\n  worst subpixel, hours of full drive per day (R/G/B): "
+          + " / ".join(f"{v:.2f}" for v in S.reshape(-1, 3).max(0)))
 
     if args.per_element:
-        print()
-        for layer, drift, name in layers:
-            still = convolve(layer.astype(np.float64), still_occupancy())
-            moved = convolve(layer.astype(np.float64), drift_occupancy(drift, args.days))
-            gy, gx = np.gradient(moved)
-            gy0, gx0 = np.gradient(still)
-            print(f"  {name:<16s} +/-{drift.amp_x:>4.0f}/+/-{drift.amp_y:<4.0f} px  "
-                  f"peak {still.max():7.1f} -> {moved.max():7.1f}   "
-                  f"ghost edge {np.hypot(gx0, gy0).max():7.2f} -> {np.hypot(gx, gy).max():6.2f}")
-
-    print("\n  peak wear is set by total emitted light, so drift can only nibble at it;"
-          "\n  lower brightness_night or enable night_dim to move that number."
-          "\n  ghost edge is what you would actually see, and that is where drift wins.")
+        mine, theirs = seen["this config"][1.0], ref[1.0].max()
+        print("\n  how visible each element's ghost is from 1 m, vs the old panel's worst (=1.00):")
+        for name, (x0, x1, y0, y1) in REGIONS.items():
+            print(f"    {name:8s} {mine[y0:y1, x0:x1].max() / theirs:5.2f}")
 
     if args.heatmap:
         from PIL import Image
-        Image.fromarray((wear / wear.max() * 255).astype(np.uint8)).save(args.heatmap)
+        img = seen["this config"][1.0]
+        Image.fromarray((img / img.max() * 255).astype(np.uint8)).save(args.heatmap)
         print(f"\nwrote {args.heatmap}")
     return 0
 

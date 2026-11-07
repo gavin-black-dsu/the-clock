@@ -1,12 +1,13 @@
 {
   "theme": "halloween",
 
+  "overall_brightness": 0.7,
   "brightness_day":   1.0,
-  "brightness_night": 0.8,
-  "brightness_sun":   1.0,
-  "brightness_moon":  0.7,
-  "brightness_weather_day":   1.0,
-  "brightness_weather_night": 0.5,
+  "brightness_night": 0.4,
+  "brightness_sun":   0.6,
+  "brightness_moon":  0.35,
+  "brightness_weather_day":   0.6,
+  "brightness_weather_night": 0.25,
 
   "temp_endpoint": "http://portal/habitat/api/most_recent",
   "temp_field": "Temperature",
@@ -15,7 +16,7 @@
   "temp_padding_top": 40,
   "temp_color_day":  [150, 200, 250],
   "temp_color_night": [100, 0, 155],
-  "temp_brightness_day":   1.0,
+  "temp_brightness_day":   0.6,
   "temp_brightness_night": 0.5,
 
   "weather_endpoint": "http://portal/weather/api/condition",
@@ -69,12 +70,12 @@
   },
 
   "drift": {
-    "max_x": 160,
+    "max_x": 200,
     "min_x": 48,
-    "max_y": 40,
+    "max_y": 80,
     "icon_max": 40,
     "top_y": 16,
-    "periods_minutes": [71, 113, 179]
+    "period_minutes": 331
   },
 
   "night_dim": {

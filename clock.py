@@ -6,7 +6,7 @@ Themed fullscreen image clock.
   • Daytime corner icon:    sun/<weekday>.png
   • Night-time corner icon: moon/<phase>.png   (phase from astral.moon.phase)
   • HH:MM am/pm            (colon + am/pm = half-width)
-  • Per-theme brightness, separate sun/moon/weather brightness
+  • Overall brightness, plus separate digit/sun/moon/weather/temperature brightness
   • Temperature readout centred at the top
   • A row of small alert icons above the temperature, each shown only when
     its endpoint says something needs attention
@@ -122,17 +122,20 @@ class DriftConfig:
     layout happens to leave more room.  The floor on x matters — without it a
     strip that grows to fill the screen width leaves no horizontal slack at
     all, and horizontal drift, which does most of the work, quietly vanishes.
-    The
-    periods are deliberately co-prime-ish so the path never repeats exactly,
-    and long enough that the peak speed stays far below the threshold at
-    which a human can see a high-contrast edge move (see README).
+    ``period_min`` is one horizontal sweep out and back: long enough that
+    the speed stays far below what a human can see a high-contrast edge do
+    (see README), and deliberately not a divisor of a day or a week.  A period
+    that is would lock the path to the time of day, and the bright daytime
+    artwork would keep landing on the same stretch of it.  Speed, and with it
+    the redraw cost, goes as amplitude / period, so a wider envelope wants a
+    proportionally longer period.
     """
     max_x: float = 160.0
     min_x: float = 48.0
     max_y: float = 40.0
     icon_max: float = 40.0
     top_y: float = 16.0
-    periods_min: tuple[float, ...] = (71.0, 113.0, 179.0)
+    period_min: float = 197.0
     quantum: float = 0.0625         # redraw once the position moves this far (px)
     enabled: bool = True
 
@@ -149,6 +152,7 @@ class NightDim:
 @dataclass(frozen=True)
 class Config:
     theme: str = "default"
+    overall_brightness: float = 1.0     # multiplies every brightness below
     brightness_day: float = 1.0
     brightness_night: float = 1.0
     brightness_sun: float = 1.0
@@ -406,21 +410,17 @@ def _parse_drift(data: dict, problems: list) -> DriftConfig:
     if not isinstance(blk, dict):
         problems.append("drift: expected an object")
         blk = {}
-    periods = blk.get("periods_minutes", (71.0, 113.0, 179.0))
-    try:
-        periods = tuple(sorted(float(p) for p in periods))
-        if not periods or min(periods) <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        problems.append(f"drift.periods_minutes: expected positive numbers, got {periods!r}")
-        periods = (71.0, 113.0, 179.0)
+    if "periods_minutes" in blk:
+        problems.append("drift.periods_minutes is no longer used: the path is one triangle "
+                        "wave per axis now, timed by drift.period_minutes (default 197)")
     return DriftConfig(
         max_x=_num(blk.get("max_x"), 160.0, "drift.max_x", problems, lo=0.0),
         min_x=_num(blk.get("min_x"), 48.0, "drift.min_x", problems, lo=0.0),
         max_y=_num(blk.get("max_y"), 40.0, "drift.max_y", problems, lo=0.0),
         icon_max=_num(blk.get("icon_max"), 40.0, "drift.icon_max", problems, lo=0.0),
         top_y=_num(blk.get("top_y"), 16.0, "drift.top_y", problems, lo=0.0),
-        periods_min=periods,
+        period_min=_num(blk.get("period_minutes"), 197.0, "drift.period_minutes", problems,
+                        lo=1.0),
         quantum=_num(blk.get("quantum"), 0.0625, "drift.quantum", problems, lo=1 / 64, hi=1.0),
         enabled=bool(blk.get("enabled", True)),
     )
@@ -466,6 +466,8 @@ def load_config(path: pathlib.Path) -> Config:
     weather_b = data.get("brightness_weather", 1.0)
     cfg = Config(
         theme=str(data.get("theme", "default")),
+        overall_brightness=_clamp01(data.get("overall_brightness", 1.0), "overall_brightness",
+                                    problems),
         brightness_day=_clamp01(data.get("brightness_day", 1.0), "brightness_day", problems),
         brightness_night=_clamp01(data.get("brightness_night", 1.0), "brightness_night", problems),
         brightness_sun=_clamp01(data.get("brightness_sun", 1.0), "brightness_sun", problems),
@@ -905,48 +907,59 @@ def check_subpixel() -> float:
 #  DRIFT
 # ═══════════════════════════════════════════════════════════════════════════
 
-class Drift:
-    """A slow, aperiodic, area-filling path for one element.
+GOLDEN = (1 + 5 ** 0.5) / 2
 
-    Each axis is the mean of N sinusoids whose periods are mutually
-    incommensurate, so the path never repeats and fills a rounded region
-    rather than tracing a fixed loop.  Peak speed is
-    ``amp · (2π/60) · mean(1/period_minutes)``, which for the shipped layout
-    works out at 0.057 px/s for the digit strip — one pixel every 17 seconds —
-    and 0.16 px/s for an element running at the full 160 px amplitude.  Both
-    are well over an order of magnitude below the velocity at which a human
-    can see a high-contrast edge move.  `peak_speed()` reports the real figure
-    and it is logged at startup, so neither number has to be trusted.
+
+def _triangle(u):
+    """-1 → +1 → -1 as `u` goes 0 → ½ → 1, in straight lines, repeating.
+    Plain arithmetic, so it works on numpy arrays too (tools/ relies on that)."""
+    return 1.0 - 4.0 * abs(u % 1.0 - 0.5)
+
+
+class Drift:
+    """A slow path that spends the same time at every offset in its box.
+
+    Each axis is a triangle wave: straight across at constant speed, then
+    straight back.  The vertical one runs φ (the golden ratio) times slower,
+    so the two never fall into a repeating loop, and within a few days the
+    path has swept the whole rectangle.
+
+    The equal time is the point.  The previous path, a mean of three sines,
+    lingered near the middle of its range — its time-share fell off like a
+    bell — so the centre of every stroke wore almost as if nothing moved and
+    the drift mostly softened the ghost's outline.  Spread evenly, the same
+    envelope holds a ghost off noticeably longer (see README).
+
+    Speed is constant, ``4 · amp / period`` per axis.  With the defaults that
+    is 0.020 px/s for the digit strip, one pixel every 50 seconds, and
+    0.054 px/s for an element at the full 160 px amplitude.  The turnarounds
+    are instantaneous, but nothing can see a reversal at that speed.
+    `peak_speed()` reports the real figure and it is logged at startup.
     """
 
-    __slots__ = ("amp_x", "amp_y", "wx", "wy", "px", "py")
+    __slots__ = ("amp_x", "amp_y", "fx", "fy", "px", "py")
 
-    def __init__(self, amp_x: float, amp_y: float, periods_min: Sequence[float], phase: int = 0):
+    def __init__(self, amp_x: float, amp_y: float, period_min: float, phase: int = 0):
         self.amp_x, self.amp_y = amp_x, amp_y
-        n = len(periods_min)
-        self.wx = tuple(2 * math.pi / (p * 60.0) for p in periods_min)
-        # A different, irrational-ish stretch on the vertical axis keeps x and
-        # y from locking into a diagonal line.
-        self.wy = tuple(2 * math.pi / (p * 60.0 * 1.6180339887) for p in periods_min)
-        self.px = tuple(phase * 1.2345 + i * 2.399963 for i in range(n))
-        self.py = tuple(phase * 0.7531 + i * 1.899774 + 0.5 for i in range(n))
+        self.fx = 1.0 / (period_min * 60.0)               # sweeps per second
+        self.fy = self.fx / GOLDEN
+        # Each element starts at a different point on its path.
+        self.px = (phase / GOLDEN) % 1.0
+        self.py = (phase / GOLDEN ** 2 + 0.25) % 1.0
 
     def at(self, t: float) -> tuple[float, float]:
-        n = len(self.wx)
-        sx = sum(math.sin(w * t + p) for w, p in zip(self.wx, self.px)) / n
-        sy = sum(math.sin(w * t + p) for w, p in zip(self.wy, self.py)) / n
-        return self.amp_x * sx, self.amp_y * sy
+        return (self.amp_x * _triangle(self.fx * t + self.px),
+                self.amp_y * _triangle(self.fy * t + self.py))
 
     def peak_speed(self) -> float:
-        n = len(self.wx)
-        return math.hypot(self.amp_x * sum(self.wx) / n, self.amp_y * sum(self.wy) / n)
+        return math.hypot(4 * self.amp_x * self.fx, 4 * self.amp_y * self.fy)
 
 
 class NoDrift(Drift):
     __slots__ = ()
 
     def __init__(self):
-        super().__init__(0.0, 0.0, (1.0,))
+        super().__init__(0.0, 0.0, 1.0)
 
     def at(self, t: float) -> tuple[float, float]:
         return 0.0, 0.0
@@ -990,6 +1003,10 @@ class Assets:
         if not self.theme_dir.is_dir():
             raise ConfigError(f"theme {cfg.theme!r} not found at {self.theme_dir}")
         pad = cfg.padding
+        # overall_brightness is folded into each element's own brightness as
+        # the artwork is loaded, so unlike night_dim — which has to multiply
+        # the whole canvas because it changes during the day — it is free.
+        ob = cfg.overall_brightness
 
         # ── corner icons ────────────────────────────────────────────────────
         # Everything is loaded, scaled and dropped one file at a time.  The
@@ -1010,15 +1027,15 @@ class Assets:
 
         self.sun = {d: spr for d in WEEKDAYS
                     if (spr := corner(self.theme_dir / "sun" / f"{d}.png",
-                                      cfg.brightness_sun)) is not None}
+                                      cfg.brightness_sun * ob)) is not None}
         self.moon = {n: spr for n in MOON_NAMES
                      if (spr := corner(self.theme_dir / "moon" / f"{n}.png",
-                                       cfg.brightness_moon)) is not None}
+                                       cfg.brightness_moon * ob)) is not None}
         weather_dir = self.theme_dir / "weather"
         weather_files = sorted(weather_dir.glob("*.png"))
         if not weather_files:
             log.warning("no weather icons in %s; the weather corner will stay empty", weather_dir)
-        wb = {"day": cfg.brightness_weather_day, "night": cfg.brightness_weather_night}
+        wb = {"day": cfg.brightness_weather_day * ob, "night": cfg.brightness_weather_night * ob}
         self.weather: dict[str, dict[str, Sprite]] = {"day": {}, "night": {}}
         for wp in weather_files:
             raw = self._load_optional(wp)
@@ -1033,7 +1050,7 @@ class Assets:
 
         # ── alert icons ─────────────────────────────────────────────────────
         A = cfg.alerts
-        ab = {"day": A.brightness_day, "night": A.brightness_night}
+        ab = {"day": A.brightness_day * ob, "night": A.brightness_night * ob}
         self.alert: dict[tuple[str, str, str], pygame.Surface] = {}
         for spec in A.items:
             raw = self._load_alert(spec.icon, A.icon_size)
@@ -1098,7 +1115,7 @@ class Assets:
         self.digit_h = max(1, round(oh * scale))
         self.strip_w = 4 * self.w_full + 2 * self.w_half
 
-        bright = {"day": cfg.brightness_day, "night": cfg.brightness_night}
+        bright = {"day": cfg.brightness_day * ob, "night": cfg.brightness_night * ob}
         # Glyphs are kept as plain images and composited into one strip
         # surface per displayed minute.  Sub-pixel blitting each glyph
         # separately would be both slower and wrong: the 1px borders of
@@ -1125,7 +1142,7 @@ class Assets:
 
         if D.enabled:
             self.drift_digits = Drift(min(D.max_x, max(0.0, slack_x)),
-                                      min(D.max_y, max(0.0, slack_y)), D.periods_min, 0)
+                                      min(D.max_y, max(0.0, slack_y)), D.period_min, 0)
             # The alert row and the temperature share one drift object, so the
             # gap between them is preserved exactly.  Drifting them
             # independently let a 28px gap close to under 2px within a week.
@@ -1135,7 +1152,7 @@ class Assets:
             widest_row = n_alerts * A.icon_size + (n_alerts - 1) * A.icon_gap
             top_w = max(self.temp_ink_w, widest_row if A.items else 0)
             self.drift_temp = Drift(min(D.max_x, max(0.0, (gutter - top_w) / 2)),
-                                    top_y, D.periods_min, 1)
+                                    top_y, D.period_min, 1)
             self.drift_alerts = self.drift_temp
             # Capped at `padding`: the icons sit that far from the panel edge,
             # so anything larger would clip them against it.
@@ -1143,8 +1160,8 @@ class Assets:
             if D.icon_max > pad:
                 log.info("drift.icon_max %.0f exceeds padding %d; using %d so the corner "
                          "icons stay on screen", D.icon_max, pad, pad)
-            self.drift_weather = Drift(icon_amp, icon_amp, D.periods_min, 3)
-            self.drift_corner = Drift(icon_amp, icon_amp, D.periods_min, 4)
+            self.drift_weather = Drift(icon_amp, icon_amp, D.period_min, 3)
+            self.drift_corner = Drift(icon_amp, icon_amp, D.period_min, 4)
         else:
             self.drift_digits = self.drift_temp = self.drift_alerts = NoDrift()
             self.drift_weather = self.drift_corner = NoDrift()
@@ -1475,7 +1492,7 @@ class Clock:
         if temp is not None and temp.fresh(cfg.temp_stale_after):
             raw = cfg.temp_color_day if is_day else cfg.temp_color_night
             b = cfg.temp_brightness_day if is_day else cfg.temp_brightness_night
-            colour = tuple(min(255, int(c * b)) for c in raw)
+            colour = tuple(min(255, int(c * b * cfg.overall_brightness)) for c in raw)
             text = f"{float(temp.value):.0f}\N{DEGREE SIGN}{cfg.temp_unit}"
             spr = A.temp_sprite(text, colour)
         dx, dy = A.drift_temp.at(mono)
@@ -1493,11 +1510,11 @@ class Clock:
         """Redraw only the elements that actually changed.
 
         The digit strip is by far the most expensive thing on screen — its
-        four-tap sub-pixel blit is two thirds of a full frame — and it drifts
-        three times slower than the temperature.  Rebuilding the whole canvas
-        whenever anything moved therefore redrew the strip about three times
-        more often than it had moved.  Elements do not overlap, so each one is
-        cleared and redrawn on its own schedule instead.
+        four-tap sub-pixel blit is two thirds of a full frame — and every
+        element crosses a redraw quantum on its own schedule.  Rebuilding the
+        whole canvas whenever anything moved therefore redrew the strip several
+        times more often than it had moved.  Elements do not overlap, so each
+        one is cleared and redrawn on its own schedule instead.
 
         Returns the rectangles that changed, for a partial screen update.
         """
