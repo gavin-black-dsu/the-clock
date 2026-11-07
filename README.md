@@ -114,6 +114,7 @@ another entry and a PNG.
 | `timeout` | `4` | socket timeout |
 | `show_at` | `"warn"` | minimum severity that makes the icon appear: `okay`, `warn`, `alarm` or `never` |
 | `stale_after` | `1800` | hide the icon if the last good reading is older than this |
+| `when_stale` | `""` | instead show it at this severity (`okay`, `warn` or `alarm`), for an endpoint whose silence is itself news |
 | `values` | see below | extra value → severity mappings |
 
 The endpoint just has to return a status somewhere:

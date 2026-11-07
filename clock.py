@@ -94,6 +94,7 @@ class AlertSpec:
     values: dict = field(default_factory=lambda: dict(DEFAULT_STATUS_MAP))
     show_at: str = "warn"           # minimum severity at which the icon appears
     stale_after: float = 1800.0     # hide the icon if the reading is older than this
+    when_stale: str = ""            # ...or show it at this severity: the source going quiet is news
 
     @property
     def enabled(self) -> bool:
@@ -335,6 +336,11 @@ def _parse_alerts(data: dict, problems: list) -> AlertsConfig:
             problems.append(f"alerts.items[{i}].show_at: {show_at!r} is not one of "
                             f"okay/warn/alarm/never")
             show_at = "warn"
+        when_stale = str(raw.get("when_stale") or "").lower()
+        if when_stale and when_stale not in ("okay", "warn", "alarm"):
+            problems.append(f"alerts.items[{i}].when_stale: {when_stale!r} is not one of "
+                            f"okay/warn/alarm")
+            when_stale = ""
         values = dict(DEFAULT_STATUS_MAP)
         extra = raw.get("values") or {}
         if isinstance(extra, dict):
@@ -372,6 +378,7 @@ def _parse_alerts(data: dict, problems: list) -> AlertsConfig:
             values=values,
             show_at=show_at,
             stale_after=item_stale,
+            when_stale=when_stale,
         ))
 
     tint_raw = blk.get("tint") or {}
@@ -1375,6 +1382,7 @@ class Clock:
         # spread it.  Reading the wall clock once keeps the path continuous
         # across restarts without exposing it to a later NTP step.
         self._t0 = time.monotonic() - time.time()
+        self._started = time.monotonic()
         err = check_subpixel()
         if err > 4.0:
             log.warning("sub-pixel blending is inexact on this SDL build (worst error "
@@ -1404,9 +1412,12 @@ class Clock:
         out = []
         for spec in self.cfg.alerts.items:
             reading = snap.get(f"alert:{spec.id}")
-            if reading is None or not reading.fresh(spec.stale_after, mono):
+            if reading is not None and reading.fresh(spec.stale_after, mono):
+                sev = str(reading.value)
+            elif spec.enabled and spec.when_stale and mono - self._started > spec.stale_after:
+                sev = spec.when_stale                      # no good reading for stale_after
+            else:
                 continue
-            sev = str(reading.value)
             if sev not in SEVERITY_RANK:
                 continue                                   # unknown; treat as no reading
             if SEVERITY_RANK[sev] >= SEVERITY_RANK[spec.show_at]:
